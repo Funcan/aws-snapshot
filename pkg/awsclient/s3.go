@@ -3,6 +3,7 @@ package awsclient
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -210,6 +211,46 @@ func (s *S3Client) listNormalBuckets(ctx context.Context) ([]BucketSummary, erro
 }
 
 func (s *S3Client) processBucket(ctx context.Context, bucketName string, creationDate *time.Time) (BucketSummary, error) {
+	var summary BucketSummary
+	var lastErr error
+
+	// Retry with exponential backoff for transient errors
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff with jitter: 1s, 2s, 4s, 8s base
+			baseDelay := time.Duration(1<<uint(attempt-1)) * time.Second
+			jitter := time.Duration(rand.Int63n(int64(baseDelay / 2)))
+			delay := baseDelay + jitter
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+			select {
+			case <-ctx.Done():
+				return BucketSummary{}, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		summary, lastErr = s.processBucketOnce(ctx, bucketName, creationDate)
+		if lastErr == nil {
+			return summary, nil
+		}
+
+		// Don't retry permanent errors
+		if isBucketPermanentlyInaccessible(lastErr) {
+			return BucketSummary{}, nil
+		}
+
+		// Retry transient errors
+		if !isTransientError(lastErr) {
+			return summary, lastErr
+		}
+	}
+
+	return summary, lastErr
+}
+
+func (s *S3Client) processBucketOnce(ctx context.Context, bucketName string, creationDate *time.Time) (BucketSummary, error) {
 	summary := BucketSummary{
 		Name:         bucketName,
 		CreationDate: creationDate,
@@ -275,6 +316,30 @@ func (s *S3Client) processBucket(ctx context.Context, bucketName string, creatio
 	}
 
 	return summary, nil
+}
+
+// isBucketPermanentlyInaccessible returns true if the error indicates the bucket was deleted,
+// doesn't exist, or we don't have access to it (not retryable).
+func isBucketPermanentlyInaccessible(err error) bool {
+	errStr := err.Error()
+	return strings.Contains(errStr, "NoSuchBucket") ||
+		strings.Contains(errStr, "AccessDenied") ||
+		strings.Contains(errStr, "AllAccessDisabled")
+}
+
+// isTransientError returns true if the error is likely transient and worth retrying.
+func isTransientError(err error) bool {
+	errStr := err.Error()
+	return strings.Contains(errStr, "no such host") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "i/o timeout") ||
+		strings.Contains(errStr, "TLS handshake timeout") ||
+		strings.Contains(errStr, "temporary failure") ||
+		strings.Contains(errStr, "network is unreachable") ||
+		strings.Contains(errStr, "Throttling") ||
+		strings.Contains(errStr, "SlowDown") ||
+		strings.Contains(errStr, "ServiceUnavailable")
 }
 
 func (s *S3Client) listDirectoryBuckets(ctx context.Context) ([]BucketSummary, error) {

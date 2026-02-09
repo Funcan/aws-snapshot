@@ -4,8 +4,10 @@ package awsclient
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
 )
 
@@ -73,6 +75,14 @@ func New(ctx context.Context, opts ...Option) (*Client, error) {
 	if o.region != "" {
 		configOpts = append(configOpts, config.WithRegion(o.region))
 	}
+
+	// Configure retry with exponential backoff for throttling errors
+	configOpts = append(configOpts, config.WithRetryer(func() aws.Retryer {
+		return retry.NewStandard(func(o *retry.StandardOptions) {
+			o.MaxAttempts = 10
+			o.MaxBackoff = 30 * time.Second
+		})
+	}))
 
 	configOpts = append(configOpts, o.configOpts...)
 
