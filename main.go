@@ -113,6 +113,12 @@ var snapshotVPCCmd = &cobra.Command{
 	RunE:  runSnapshotVPC,
 }
 
+var snapshotCloudFrontCmd = &cobra.Command{
+	Use:   "cloudfront",
+	Short: "Snapshot CloudFront distributions",
+	RunE:  runSnapshotCloudFront,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -139,6 +145,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotRoute53Cmd)
 	snapshotCmd.AddCommand(snapshotMSKCmd)
 	snapshotCmd.AddCommand(snapshotVPCCmd)
+	snapshotCmd.AddCommand(snapshotCloudFrontCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -161,19 +168,20 @@ func statusf(format string, args ...any) {
 
 // Snapshot represents the top-level output structure.
 type Snapshot struct {
-	S3          []awsclient.BucketSummary     `json:"S3,omitempty"`
-	EKS         []awsclient.ClusterSummary    `json:"EKS,omitempty"`
-	RDS         *awsclient.RDSSummary         `json:"RDS,omitempty"`
-	OpenSearch  []awsclient.DomainSummary     `json:"OpenSearch,omitempty"`
-	ElastiCache *awsclient.ElastiCacheSummary `json:"ElastiCache,omitempty"`
-	DynamoDB    []awsclient.TableSummary      `json:"DynamoDB,omitempty"`
-	Lambda      []awsclient.FunctionSummary   `json:"Lambda,omitempty"`
-	ECR         []awsclient.RepositorySummary `json:"ECR,omitempty"`
-	ECS         *awsclient.ECSSummary         `json:"ECS,omitempty"`
-	ELB         *awsclient.ELBSummary         `json:"ELB,omitempty"`
-	Route53     []awsclient.HostedZoneSummary `json:"Route53,omitempty"`
-	MSK         []awsclient.MSKClusterSummary `json:"MSK,omitempty"`
-	VPC         []awsclient.VPCSummary        `json:"VPC,omitempty"`
+	S3          []awsclient.BucketSummary       `json:"S3,omitempty"`
+	EKS         []awsclient.ClusterSummary      `json:"EKS,omitempty"`
+	RDS         *awsclient.RDSSummary           `json:"RDS,omitempty"`
+	OpenSearch  []awsclient.DomainSummary       `json:"OpenSearch,omitempty"`
+	ElastiCache *awsclient.ElastiCacheSummary   `json:"ElastiCache,omitempty"`
+	DynamoDB    []awsclient.TableSummary        `json:"DynamoDB,omitempty"`
+	Lambda      []awsclient.FunctionSummary     `json:"Lambda,omitempty"`
+	ECR         []awsclient.RepositorySummary   `json:"ECR,omitempty"`
+	ECS         *awsclient.ECSSummary           `json:"ECS,omitempty"`
+	ELB         *awsclient.ELBSummary           `json:"ELB,omitempty"`
+	Route53     []awsclient.HostedZoneSummary   `json:"Route53,omitempty"`
+	MSK         []awsclient.MSKClusterSummary   `json:"MSK,omitempty"`
+	VPC         []awsclient.VPCSummary          `json:"VPC,omitempty"`
+	CloudFront  []awsclient.DistributionSummary `json:"CloudFront,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -658,6 +666,40 @@ func runSnapshotVPC(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotCloudFront(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var cfOpts []awsclient.CloudFrontOption
+	if verbose {
+		cfOpts = append(cfOpts, awsclient.WithCloudFrontStatusFunc(statusf))
+	}
+	cfOpts = append(cfOpts, awsclient.WithCloudFrontConcurrency(concurrency))
+	cfClient := client.CloudFrontClient(cfOpts...)
+
+	statusf("Fetching CloudFront distributions...")
+	distributions, err := cfClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing CloudFront distributions: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(distributions, func(i, j int) bool {
+		return distributions[i].Id < distributions[j].Id
+	})
+
+	if err := outputSnapshot(Snapshot{CloudFront: distributions}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -946,6 +988,25 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		})
 	}
 	snap.VPC = vpcs
+
+	// Fetch CloudFront distributions
+	var cfOpts []awsclient.CloudFrontOption
+	if verbose {
+		cfOpts = append(cfOpts, awsclient.WithCloudFrontStatusFunc(statusf))
+	}
+	cfOpts = append(cfOpts, awsclient.WithCloudFrontConcurrency(concurrency))
+	cfClient := client.CloudFrontClient(cfOpts...)
+
+	statusf("Fetching CloudFront distributions...")
+	distributions, err := cfClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing CloudFront distributions: %w", err)
+	}
+
+	sort.Slice(distributions, func(i, j int) bool {
+		return distributions[i].Id < distributions[j].Id
+	})
+	snap.CloudFront = distributions
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
