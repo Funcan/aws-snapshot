@@ -203,8 +203,6 @@ func (e *EKSClient) describeCluster(ctx context.Context, name string) ClusterSum
 }
 
 func (e *EKSClient) listNodeGroups(ctx context.Context, clusterName string) []NodeGroupSummary {
-	var nodeGroups []NodeGroupSummary
-
 	// List node group names
 	var nodeGroupNames []string
 	paginator := eks.NewListNodegroupsPaginator(e.client, &eks.ListNodegroupsInput{
@@ -213,41 +211,83 @@ func (e *EKSClient) listNodeGroups(ctx context.Context, clusterName string) []No
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nodeGroups
+			return nil
 		}
 		nodeGroupNames = append(nodeGroupNames, page.Nodegroups...)
 	}
 
-	// Describe each node group
-	for _, ngName := range nodeGroupNames {
-		resp, err := e.client.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
-			ClusterName:   &clusterName,
-			NodegroupName: &ngName,
-		})
-		if err != nil {
-			continue
-		}
-
-		ng := resp.Nodegroup
-		summary := NodeGroupSummary{
-			Name:           aws.ToString(ng.NodegroupName),
-			Status:         string(ng.Status),
-			InstanceTypes:  ng.InstanceTypes,
-			AmiType:        string(ng.AmiType),
-			ReleaseVersion: aws.ToString(ng.ReleaseVersion),
-		}
-
-		if ng.ScalingConfig != nil {
-			if ng.ScalingConfig.MinSize != nil {
-				summary.MinSize = int32(*ng.ScalingConfig.MinSize)
-			}
-			if ng.ScalingConfig.MaxSize != nil {
-				summary.MaxSize = int32(*ng.ScalingConfig.MaxSize)
-			}
-		}
-
-		nodeGroups = append(nodeGroups, summary)
+	total := len(nodeGroupNames)
+	if total == 0 {
+		return nil
 	}
 
-	return nodeGroups
+	nodeGroups := make([]NodeGroupSummary, total)
+
+	// Create work channel
+	workCh := make(chan int, total)
+	for i := range nodeGroupNames {
+		workCh <- i
+	}
+	close(workCh)
+
+	// Process node groups concurrently
+	var wg sync.WaitGroup
+	for i := 0; i < e.concurrency && i < total; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range workCh {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				ngName := nodeGroupNames[idx]
+				nodeGroups[idx] = e.describeNodeGroup(ctx, clusterName, ngName)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// Filter out empty summaries (errors)
+	result := make([]NodeGroupSummary, 0, total)
+	for _, ng := range nodeGroups {
+		if ng.Name != "" {
+			result = append(result, ng)
+		}
+	}
+
+	return result
+}
+
+func (e *EKSClient) describeNodeGroup(ctx context.Context, clusterName, ngName string) NodeGroupSummary {
+	resp, err := e.client.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
+		ClusterName:   &clusterName,
+		NodegroupName: &ngName,
+	})
+	if err != nil {
+		return NodeGroupSummary{}
+	}
+
+	ng := resp.Nodegroup
+	summary := NodeGroupSummary{
+		Name:           aws.ToString(ng.NodegroupName),
+		Status:         string(ng.Status),
+		InstanceTypes:  ng.InstanceTypes,
+		AmiType:        string(ng.AmiType),
+		ReleaseVersion: aws.ToString(ng.ReleaseVersion),
+	}
+
+	if ng.ScalingConfig != nil {
+		if ng.ScalingConfig.MinSize != nil {
+			summary.MinSize = int32(*ng.ScalingConfig.MinSize)
+		}
+		if ng.ScalingConfig.MaxSize != nil {
+			summary.MaxSize = int32(*ng.ScalingConfig.MaxSize)
+		}
+	}
+
+	return summary
 }
