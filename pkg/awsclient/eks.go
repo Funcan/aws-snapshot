@@ -64,22 +64,34 @@ func (e *EKSClient) status(format string, args ...any) {
 
 // ClusterSummary represents key attributes of an EKS cluster.
 type ClusterSummary struct {
-	Name                   string            `json:"name"`
-	Arn                    string            `json:"arn"`
-	Version                string            `json:"version"`
-	Status                 string            `json:"status"`
-	Endpoint               string            `json:"endpoint,omitempty"`
-	RoleArn                string            `json:"role_arn,omitempty"`
-	VpcId                  string            `json:"vpc_id,omitempty"`
-	SubnetIds              []string          `json:"subnet_ids,omitempty"`
-	SecurityGroupIds       []string          `json:"security_group_ids,omitempty"`
-	ClusterSecurityGroupId string            `json:"cluster_security_group_id,omitempty"`
-	EndpointPublicAccess   bool              `json:"endpoint_public_access"`
-	EndpointPrivateAccess  bool              `json:"endpoint_private_access"`
-	PublicAccessCidrs      []string          `json:"public_access_cidrs,omitempty"`
-	EncryptionConfigured   bool              `json:"encryption_configured"`
-	LoggingEnabled         []string          `json:"logging_enabled,omitempty"`
-	Tags                   map[string]string `json:"tags,omitempty"`
+	Name                   string             `json:"name"`
+	Arn                    string             `json:"arn"`
+	Version                string             `json:"version"`
+	Status                 string             `json:"status"`
+	Endpoint               string             `json:"endpoint,omitempty"`
+	RoleArn                string             `json:"role_arn,omitempty"`
+	VpcId                  string             `json:"vpc_id,omitempty"`
+	SubnetIds              []string           `json:"subnet_ids,omitempty"`
+	SecurityGroupIds       []string           `json:"security_group_ids,omitempty"`
+	ClusterSecurityGroupId string             `json:"cluster_security_group_id,omitempty"`
+	EndpointPublicAccess   bool               `json:"endpoint_public_access"`
+	EndpointPrivateAccess  bool               `json:"endpoint_private_access"`
+	PublicAccessCidrs      []string           `json:"public_access_cidrs,omitempty"`
+	EncryptionConfigured   bool               `json:"encryption_configured"`
+	LoggingEnabled         []string           `json:"logging_enabled,omitempty"`
+	Tags                   map[string]string  `json:"tags,omitempty"`
+	NodeGroups             []NodeGroupSummary `json:"node_groups,omitempty"`
+}
+
+// NodeGroupSummary represents key attributes of an EKS node group.
+type NodeGroupSummary struct {
+	Name           string   `json:"name"`
+	Status         string   `json:"status"`
+	InstanceTypes  []string `json:"instance_types,omitempty"`
+	AmiType        string   `json:"ami_type,omitempty"`
+	ReleaseVersion string   `json:"release_version,omitempty"`
+	MinSize        int32    `json:"min_size"`
+	MaxSize        int32    `json:"max_size"`
 }
 
 // Summarise returns a summary of all EKS clusters.
@@ -184,5 +196,58 @@ func (e *EKSClient) describeCluster(ctx context.Context, name string) ClusterSum
 
 	summary.Tags = cluster.Tags
 
+	// Get node groups
+	summary.NodeGroups = e.listNodeGroups(ctx, name)
+
 	return summary
+}
+
+func (e *EKSClient) listNodeGroups(ctx context.Context, clusterName string) []NodeGroupSummary {
+	var nodeGroups []NodeGroupSummary
+
+	// List node group names
+	var nodeGroupNames []string
+	paginator := eks.NewListNodegroupsPaginator(e.client, &eks.ListNodegroupsInput{
+		ClusterName: &clusterName,
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nodeGroups
+		}
+		nodeGroupNames = append(nodeGroupNames, page.Nodegroups...)
+	}
+
+	// Describe each node group
+	for _, ngName := range nodeGroupNames {
+		resp, err := e.client.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
+			ClusterName:   &clusterName,
+			NodegroupName: &ngName,
+		})
+		if err != nil {
+			continue
+		}
+
+		ng := resp.Nodegroup
+		summary := NodeGroupSummary{
+			Name:           aws.ToString(ng.NodegroupName),
+			Status:         string(ng.Status),
+			InstanceTypes:  ng.InstanceTypes,
+			AmiType:        string(ng.AmiType),
+			ReleaseVersion: aws.ToString(ng.ReleaseVersion),
+		}
+
+		if ng.ScalingConfig != nil {
+			if ng.ScalingConfig.MinSize != nil {
+				summary.MinSize = int32(*ng.ScalingConfig.MinSize)
+			}
+			if ng.ScalingConfig.MaxSize != nil {
+				summary.MaxSize = int32(*ng.ScalingConfig.MaxSize)
+			}
+		}
+
+		nodeGroups = append(nodeGroups, summary)
+	}
+
+	return nodeGroups
 }
