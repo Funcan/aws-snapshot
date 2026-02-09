@@ -47,6 +47,12 @@ var snapshotEKSCmd = &cobra.Command{
 	RunE:  runSnapshotEKS,
 }
 
+var snapshotRDSCmd = &cobra.Command{
+	Use:   "rds",
+	Short: "Snapshot RDS instances and clusters",
+	RunE:  runSnapshotRDS,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -62,6 +68,7 @@ func init() {
 	rootCmd.AddCommand(snapshotCmd)
 	snapshotCmd.AddCommand(snapshotS3Cmd)
 	snapshotCmd.AddCommand(snapshotEKSCmd)
+	snapshotCmd.AddCommand(snapshotRDSCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -86,6 +93,7 @@ func statusf(format string, args ...any) {
 type Snapshot struct {
 	S3  []awsclient.BucketSummary  `json:"S3,omitempty"`
 	EKS []awsclient.ClusterSummary `json:"EKS,omitempty"`
+	RDS *awsclient.RDSSummary      `json:"RDS,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -162,6 +170,43 @@ func runSnapshotEKS(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotRDS(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var rdsOpts []awsclient.RDSOption
+	if verbose {
+		rdsOpts = append(rdsOpts, awsclient.WithRDSStatusFunc(statusf))
+	}
+	rdsOpts = append(rdsOpts, awsclient.WithRDSConcurrency(concurrency))
+	rdsClient := client.RDSClient(rdsOpts...)
+
+	statusf("Fetching RDS instances and clusters...")
+	rdsSummary, err := rdsClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing RDS resources: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(rdsSummary.Instances, func(i, j int) bool {
+		return rdsSummary.Instances[i].Identifier < rdsSummary.Instances[j].Identifier
+	})
+	sort.Slice(rdsSummary.Clusters, func(i, j int) bool {
+		return rdsSummary.Clusters[i].Identifier < rdsSummary.Clusters[j].Identifier
+	})
+
+	if err := outputSnapshot(Snapshot{RDS: rdsSummary}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -210,6 +255,28 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return clusters[i].Name < clusters[j].Name
 	})
 	snap.EKS = clusters
+
+	// Fetch RDS instances and clusters
+	var rdsOpts []awsclient.RDSOption
+	if verbose {
+		rdsOpts = append(rdsOpts, awsclient.WithRDSStatusFunc(statusf))
+	}
+	rdsOpts = append(rdsOpts, awsclient.WithRDSConcurrency(concurrency))
+	rdsClient := client.RDSClient(rdsOpts...)
+
+	statusf("Fetching RDS instances and clusters...")
+	rdsSummary, err := rdsClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing RDS resources: %w", err)
+	}
+
+	sort.Slice(rdsSummary.Instances, func(i, j int) bool {
+		return rdsSummary.Instances[i].Identifier < rdsSummary.Instances[j].Identifier
+	})
+	sort.Slice(rdsSummary.Clusters, func(i, j int) bool {
+		return rdsSummary.Clusters[i].Identifier < rdsSummary.Clusters[j].Identifier
+	})
+	snap.RDS = rdsSummary
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
