@@ -13,9 +13,10 @@ import (
 )
 
 var (
-	profile string
-	region  string
-	verbose bool
+	profile     string
+	region      string
+	verbose     bool
+	concurrency int
 )
 
 func main() {
@@ -44,6 +45,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS profile to use")
 	rootCmd.PersistentFlags().StringVar(&region, "region", "", "AWS region to use")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Print progress messages to stderr")
+	rootCmd.PersistentFlags().IntVarP(&concurrency, "concurrency", "c", 50, "Maximum number of resources to process in parallel")
 
 	rootCmd.AddCommand(snapshotCmd)
 	snapshotCmd.AddCommand(snapshotS3Cmd)
@@ -79,6 +81,7 @@ func runSnapshotS3(cmd *cobra.Command, args []string) error {
 	if verbose {
 		s3Opts = append(s3Opts, awsclient.WithStatusFunc(statusf))
 	}
+	s3Opts = append(s3Opts, awsclient.WithConcurrency(concurrency))
 	s3client := client.S3Client(s3Opts...)
 
 	statusf("Fetching S3 buckets...")

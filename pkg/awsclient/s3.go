@@ -2,6 +2,8 @@ package awsclient
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -18,6 +20,7 @@ type S3Client struct {
 	includeNormal    bool
 	includeDirectory bool
 	statusf          StatusFunc
+	concurrency      int
 }
 
 // S3Option is a functional option for configuring the S3Client.
@@ -27,6 +30,7 @@ type s3Options struct {
 	includeNormal    bool
 	includeDirectory bool
 	statusf          StatusFunc
+	concurrency      int
 }
 
 // WithoutNormalBuckets disables listing of normal S3 buckets.
@@ -50,11 +54,21 @@ func WithStatusFunc(f StatusFunc) S3Option {
 	}
 }
 
+// WithConcurrency sets the maximum number of buckets to process in parallel.
+func WithConcurrency(n int) S3Option {
+	return func(o *s3Options) {
+		if n > 0 {
+			o.concurrency = n
+		}
+	}
+}
+
 // S3Client returns an S3Client configured with the given options.
 func (c *Client) S3Client(opts ...S3Option) *S3Client {
 	o := &s3Options{
 		includeNormal:    true,
 		includeDirectory: true,
+		concurrency:      50,
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -65,6 +79,7 @@ func (c *Client) S3Client(opts ...S3Option) *S3Client {
 		includeNormal:    o.includeNormal,
 		includeDirectory: o.includeDirectory,
 		statusf:          o.statusf,
+		concurrency:      o.concurrency,
 	}
 }
 
@@ -123,67 +138,112 @@ func (s *S3Client) listNormalBuckets(ctx context.Context) ([]BucketSummary, erro
 		return nil, err
 	}
 
-	s.status("Found %d general-purpose buckets", len(resp.Buckets))
-	summaries := make([]BucketSummary, 0, len(resp.Buckets))
+	total := len(resp.Buckets)
+	s.status("Found %d general-purpose buckets, processing with concurrency %d", total, s.concurrency)
+
+	summaries := make([]BucketSummary, total)
+	var processed atomic.Int64
+
+	// Create work channel and semaphore
+	type work struct {
+		index  int
+		bucket string
+	}
+	workCh := make(chan work, total)
 	for i, bucket := range resp.Buckets {
-		bucketName := aws.ToString(bucket.Name)
-		s.status("[%d/%d] Processing bucket: %s", i+1, len(resp.Buckets), bucketName)
-		summary := BucketSummary{
-			Name:         bucketName,
-			CreationDate: bucket.CreationDate,
-			BucketType:   "general-purpose",
-		}
+		workCh <- work{index: i, bucket: aws.ToString(bucket.Name)}
+	}
+	close(workCh)
 
-		// Get bucket location
-		locResp, err := s.client.GetBucketLocation(ctx, &s3.GetBucketLocationInput{
-			Bucket: bucket.Name,
-		})
-		if err == nil {
-			region := string(locResp.LocationConstraint)
-			if region == "" {
-				region = "us-east-1" // Default region returns empty
+	// Process buckets concurrently
+	var wg sync.WaitGroup
+	errCh := make(chan error, 1)
+
+	for i := 0; i < s.concurrency && i < total; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for w := range workCh {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				summary := s.processBucket(ctx, w.bucket, resp.Buckets[w.index].CreationDate)
+				summaries[w.index] = summary
+
+				n := processed.Add(1)
+				s.status("[%d/%d] Processed bucket: %s", n, total, w.bucket)
 			}
-			summary.Region = region
-		}
+		}()
+	}
 
-		// Get versioning status
-		verResp, err := s.client.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{
-			Bucket: bucket.Name,
-		})
-		if err == nil {
-			summary.VersioningState = string(verResp.Status)
-			if summary.VersioningState == "" {
-				summary.VersioningState = "disabled"
-			}
-		}
+	wg.Wait()
 
-		// Get lifecycle rules
-		lcResp, err := s.client.GetBucketLifecycleConfiguration(ctx, &s3.GetBucketLifecycleConfigurationInput{
-			Bucket: bucket.Name,
-		})
-		if err == nil && lcResp.Rules != nil {
-			for _, rule := range lcResp.Rules {
-				lr := LifecycleRule{
-					ID:     aws.ToString(rule.ID),
-					Status: string(rule.Status),
-				}
-				if rule.Filter != nil && rule.Filter.Prefix != nil {
-					lr.Prefix = *rule.Filter.Prefix
-				}
-				if rule.Expiration != nil && rule.Expiration.Days != nil {
-					lr.ExpirationDays = rule.Expiration.Days
-				}
-				if rule.NoncurrentVersionExpiration != nil && rule.NoncurrentVersionExpiration.NoncurrentDays != nil {
-					lr.NoncurrentVersionExpirationDays = rule.NoncurrentVersionExpiration.NoncurrentDays
-				}
-				summary.LifecycleRules = append(summary.LifecycleRules, lr)
-			}
-		}
-
-		summaries = append(summaries, summary)
+	select {
+	case err := <-errCh:
+		return nil, err
+	default:
 	}
 
 	return summaries, nil
+}
+
+func (s *S3Client) processBucket(ctx context.Context, bucketName string, creationDate *time.Time) BucketSummary {
+	summary := BucketSummary{
+		Name:         bucketName,
+		CreationDate: creationDate,
+		BucketType:   "general-purpose",
+	}
+
+	// Get bucket location
+	locResp, err := s.client.GetBucketLocation(ctx, &s3.GetBucketLocationInput{
+		Bucket: &bucketName,
+	})
+	if err == nil {
+		region := string(locResp.LocationConstraint)
+		if region == "" {
+			region = "us-east-1" // Default region returns empty
+		}
+		summary.Region = region
+	}
+
+	// Get versioning status
+	verResp, err := s.client.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{
+		Bucket: &bucketName,
+	})
+	if err == nil {
+		summary.VersioningState = string(verResp.Status)
+		if summary.VersioningState == "" {
+			summary.VersioningState = "disabled"
+		}
+	}
+
+	// Get lifecycle rules
+	lcResp, err := s.client.GetBucketLifecycleConfiguration(ctx, &s3.GetBucketLifecycleConfigurationInput{
+		Bucket: &bucketName,
+	})
+	if err == nil && lcResp.Rules != nil {
+		for _, rule := range lcResp.Rules {
+			lr := LifecycleRule{
+				ID:     aws.ToString(rule.ID),
+				Status: string(rule.Status),
+			}
+			if rule.Filter != nil && rule.Filter.Prefix != nil {
+				lr.Prefix = *rule.Filter.Prefix
+			}
+			if rule.Expiration != nil && rule.Expiration.Days != nil {
+				lr.ExpirationDays = rule.Expiration.Days
+			}
+			if rule.NoncurrentVersionExpiration != nil && rule.NoncurrentVersionExpiration.NoncurrentDays != nil {
+				lr.NoncurrentVersionExpirationDays = rule.NoncurrentVersionExpiration.NoncurrentDays
+			}
+			summary.LifecycleRules = append(summary.LifecycleRules, lr)
+		}
+	}
+
+	return summary
 }
 
 func (s *S3Client) listDirectoryBuckets(ctx context.Context) ([]BucketSummary, error) {
