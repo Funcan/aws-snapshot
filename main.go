@@ -83,6 +83,12 @@ var snapshotECRCmd = &cobra.Command{
 	RunE:  runSnapshotECR,
 }
 
+var snapshotECSCmd = &cobra.Command{
+	Use:   "ecs",
+	Short: "Snapshot ECS clusters and services",
+	RunE:  runSnapshotECS,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -104,6 +110,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotDynamoDBCmd)
 	snapshotCmd.AddCommand(snapshotLambdaCmd)
 	snapshotCmd.AddCommand(snapshotECRCmd)
+	snapshotCmd.AddCommand(snapshotECSCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -134,6 +141,7 @@ type Snapshot struct {
 	DynamoDB    []awsclient.TableSummary      `json:"DynamoDB,omitempty"`
 	Lambda      []awsclient.FunctionSummary   `json:"Lambda,omitempty"`
 	ECR         []awsclient.RepositorySummary `json:"ECR,omitempty"`
+	ECS         *awsclient.ECSSummary         `json:"ECS,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -418,6 +426,46 @@ func runSnapshotECR(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotECS(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var ecsOpts []awsclient.ECSOption
+	if verbose {
+		ecsOpts = append(ecsOpts, awsclient.WithECSStatusFunc(statusf))
+	}
+	ecsOpts = append(ecsOpts, awsclient.WithECSConcurrency(concurrency))
+	ecsClient := client.ECSClient(ecsOpts...)
+
+	statusf("Fetching ECS clusters and services...")
+	ecsSummary, err := ecsClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing ECS resources: %w", err)
+	}
+
+	// Sort clusters for consistent diffs
+	sort.Slice(ecsSummary.Clusters, func(i, j int) bool {
+		return ecsSummary.Clusters[i].ClusterName < ecsSummary.Clusters[j].ClusterName
+	})
+	// Sort services within each cluster
+	for i := range ecsSummary.Clusters {
+		sort.Slice(ecsSummary.Clusters[i].Services, func(a, b int) bool {
+			return ecsSummary.Clusters[i].Services[a].ServiceName < ecsSummary.Clusters[i].Services[b].ServiceName
+		})
+	}
+
+	if err := outputSnapshot(Snapshot{ECS: ecsSummary}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -584,6 +632,30 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return repos[i].RepositoryName < repos[j].RepositoryName
 	})
 	snap.ECR = repos
+
+	// Fetch ECS clusters and services
+	var ecsOpts []awsclient.ECSOption
+	if verbose {
+		ecsOpts = append(ecsOpts, awsclient.WithECSStatusFunc(statusf))
+	}
+	ecsOpts = append(ecsOpts, awsclient.WithECSConcurrency(concurrency))
+	ecsClient := client.ECSClient(ecsOpts...)
+
+	statusf("Fetching ECS clusters and services...")
+	ecsSummary, err := ecsClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing ECS resources: %w", err)
+	}
+
+	sort.Slice(ecsSummary.Clusters, func(i, j int) bool {
+		return ecsSummary.Clusters[i].ClusterName < ecsSummary.Clusters[j].ClusterName
+	})
+	for i := range ecsSummary.Clusters {
+		sort.Slice(ecsSummary.Clusters[i].Services, func(a, b int) bool {
+			return ecsSummary.Clusters[i].Services[a].ServiceName < ecsSummary.Clusters[i].Services[b].ServiceName
+		})
+	}
+	snap.ECS = ecsSummary
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
