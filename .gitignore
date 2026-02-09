@@ -1,0 +1,11 @@
+aws-snapshot
+
+.DS_Store
+.VSCode
+.idea
+.vscode
+
+coverage
+coverage.out
+coverage.html
+coverage.txt
