@@ -239,19 +239,69 @@ func outputSnapshot(snap Snapshot) error {
 		return err
 	}
 
+	// Sort all arrays in the JSON for diffability
+	sortedJSON, err := sortJSONArrays(buf.Bytes())
+	if err != nil {
+		return err
+	}
+
 	// Default to stdout
 	if outfile == "" {
-		_, err := os.Stdout.Write(buf.Bytes())
+		_, err := os.Stdout.Write(sortedJSON)
 		return err
 	}
 
 	// Check for S3 URL
 	if strings.HasPrefix(outfile, "s3://") {
-		return writeToS3(buf.Bytes())
+		return writeToS3(sortedJSON)
 	}
 
 	// Write to local file
-	return os.WriteFile(outfile, buf.Bytes(), 0644)
+	return os.WriteFile(outfile, sortedJSON, 0644)
+}
+
+// sortJSONArrays recursively sorts all arrays in the JSON for consistent diffable output.
+func sortJSONArrays(data []byte) ([]byte, error) {
+	var v interface{}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return nil, err
+	}
+
+	sortValue(v)
+
+	// Re-encode with indentation
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// sortValue recursively sorts all arrays in an interface{} value.
+func sortValue(v interface{}) {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		for _, value := range val {
+			sortValue(value)
+		}
+	case []interface{}:
+		// First, recursively sort nested structures
+		for _, item := range val {
+			sortValue(item)
+		}
+		// Then sort this array by JSON representation
+		sort.Slice(val, func(i, j int) bool {
+			return jsonString(val[i]) < jsonString(val[j])
+		})
+	}
+}
+
+// jsonString returns the JSON representation of a value for sorting.
+func jsonString(v interface{}) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 func writeToS3(data []byte) error {
