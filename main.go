@@ -101,6 +101,12 @@ var snapshotRoute53Cmd = &cobra.Command{
 	RunE:  runSnapshotRoute53,
 }
 
+var snapshotMSKCmd = &cobra.Command{
+	Use:   "msk",
+	Short: "Snapshot MSK clusters",
+	RunE:  runSnapshotMSK,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -125,6 +131,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotECSCmd)
 	snapshotCmd.AddCommand(snapshotELBCmd)
 	snapshotCmd.AddCommand(snapshotRoute53Cmd)
+	snapshotCmd.AddCommand(snapshotMSKCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -158,6 +165,7 @@ type Snapshot struct {
 	ECS         *awsclient.ECSSummary         `json:"ECS,omitempty"`
 	ELB         *awsclient.ELBSummary         `json:"ELB,omitempty"`
 	Route53     []awsclient.HostedZoneSummary `json:"Route53,omitempty"`
+	MSK         []awsclient.MSKClusterSummary `json:"MSK,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -562,6 +570,40 @@ func runSnapshotRoute53(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotMSK(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var mskOpts []awsclient.MSKOption
+	if verbose {
+		mskOpts = append(mskOpts, awsclient.WithMSKStatusFunc(statusf))
+	}
+	mskOpts = append(mskOpts, awsclient.WithMSKConcurrency(concurrency))
+	mskClient := client.MSKClient(mskOpts...)
+
+	statusf("Fetching MSK clusters...")
+	clusters, err := mskClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing MSK clusters: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(clusters, func(i, j int) bool {
+		return clusters[i].ClusterName < clusters[j].ClusterName
+	})
+
+	if err := outputSnapshot(Snapshot{MSK: clusters}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -801,6 +843,25 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		})
 	}
 	snap.Route53 = zones
+
+	// Fetch MSK clusters
+	var mskOpts []awsclient.MSKOption
+	if verbose {
+		mskOpts = append(mskOpts, awsclient.WithMSKStatusFunc(statusf))
+	}
+	mskOpts = append(mskOpts, awsclient.WithMSKConcurrency(concurrency))
+	mskClient := client.MSKClient(mskOpts...)
+
+	statusf("Fetching MSK clusters...")
+	mskClusters, err := mskClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing MSK clusters: %w", err)
+	}
+
+	sort.Slice(mskClusters, func(i, j int) bool {
+		return mskClusters[i].ClusterName < mskClusters[j].ClusterName
+	})
+	snap.MSK = mskClusters
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
