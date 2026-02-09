@@ -119,6 +119,12 @@ var snapshotCloudFrontCmd = &cobra.Command{
 	RunE:  runSnapshotCloudFront,
 }
 
+var snapshotAPIGatewayCmd = &cobra.Command{
+	Use:   "apigateway",
+	Short: "Snapshot API Gateway REST and HTTP APIs",
+	RunE:  runSnapshotAPIGateway,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -146,6 +152,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotMSKCmd)
 	snapshotCmd.AddCommand(snapshotVPCCmd)
 	snapshotCmd.AddCommand(snapshotCloudFrontCmd)
+	snapshotCmd.AddCommand(snapshotAPIGatewayCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -182,6 +189,7 @@ type Snapshot struct {
 	MSK         []awsclient.MSKClusterSummary   `json:"MSK,omitempty"`
 	VPC         []awsclient.VPCSummary          `json:"VPC,omitempty"`
 	CloudFront  []awsclient.DistributionSummary `json:"CloudFront,omitempty"`
+	APIGateway  *awsclient.APIGatewaySummary    `json:"APIGateway,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -700,6 +708,43 @@ func runSnapshotCloudFront(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotAPIGateway(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var apigwOpts []awsclient.APIGatewayOption
+	if verbose {
+		apigwOpts = append(apigwOpts, awsclient.WithAPIGatewayStatusFunc(statusf))
+	}
+	apigwOpts = append(apigwOpts, awsclient.WithAPIGatewayConcurrency(concurrency))
+	apigwClient := client.APIGatewayClient(apigwOpts...)
+
+	statusf("Fetching API Gateway APIs...")
+	summary, err := apigwClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing API Gateway APIs: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(summary.RestAPIs, func(i, j int) bool {
+		return summary.RestAPIs[i].Name < summary.RestAPIs[j].Name
+	})
+	sort.Slice(summary.HttpAPIs, func(i, j int) bool {
+		return summary.HttpAPIs[i].Name < summary.HttpAPIs[j].Name
+	})
+
+	if err := outputSnapshot(Snapshot{APIGateway: summary}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -1007,6 +1052,28 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return distributions[i].Id < distributions[j].Id
 	})
 	snap.CloudFront = distributions
+
+	// Fetch API Gateway
+	var apigwOpts []awsclient.APIGatewayOption
+	if verbose {
+		apigwOpts = append(apigwOpts, awsclient.WithAPIGatewayStatusFunc(statusf))
+	}
+	apigwOpts = append(apigwOpts, awsclient.WithAPIGatewayConcurrency(concurrency))
+	apigwClient := client.APIGatewayClient(apigwOpts...)
+
+	statusf("Fetching API Gateway APIs...")
+	apigwSummary, err := apigwClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing API Gateway APIs: %w", err)
+	}
+
+	sort.Slice(apigwSummary.RestAPIs, func(i, j int) bool {
+		return apigwSummary.RestAPIs[i].Name < apigwSummary.RestAPIs[j].Name
+	})
+	sort.Slice(apigwSummary.HttpAPIs, func(i, j int) bool {
+		return apigwSummary.HttpAPIs[i].Name < apigwSummary.HttpAPIs[j].Name
+	})
+	snap.APIGateway = apigwSummary
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
