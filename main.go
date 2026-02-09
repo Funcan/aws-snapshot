@@ -77,6 +77,12 @@ var snapshotLambdaCmd = &cobra.Command{
 	RunE:  runSnapshotLambda,
 }
 
+var snapshotECRCmd = &cobra.Command{
+	Use:   "ecr",
+	Short: "Snapshot ECR repositories",
+	RunE:  runSnapshotECR,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -97,6 +103,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotElastiCacheCmd)
 	snapshotCmd.AddCommand(snapshotDynamoDBCmd)
 	snapshotCmd.AddCommand(snapshotLambdaCmd)
+	snapshotCmd.AddCommand(snapshotECRCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -126,6 +133,7 @@ type Snapshot struct {
 	ElastiCache *awsclient.ElastiCacheSummary `json:"ElastiCache,omitempty"`
 	DynamoDB    []awsclient.TableSummary      `json:"DynamoDB,omitempty"`
 	Lambda      []awsclient.FunctionSummary   `json:"Lambda,omitempty"`
+	ECR         []awsclient.RepositorySummary `json:"ECR,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -376,6 +384,40 @@ func runSnapshotLambda(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotECR(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var ecrOpts []awsclient.ECROption
+	if verbose {
+		ecrOpts = append(ecrOpts, awsclient.WithECRStatusFunc(statusf))
+	}
+	ecrOpts = append(ecrOpts, awsclient.WithECRConcurrency(concurrency))
+	ecrClient := client.ECRClient(ecrOpts...)
+
+	statusf("Fetching ECR repositories...")
+	repos, err := ecrClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing ECR repositories: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(repos, func(i, j int) bool {
+		return repos[i].RepositoryName < repos[j].RepositoryName
+	})
+
+	if err := outputSnapshot(Snapshot{ECR: repos}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -523,6 +565,25 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return functions[i].FunctionName < functions[j].FunctionName
 	})
 	snap.Lambda = functions
+
+	// Fetch ECR repositories
+	var ecrOpts []awsclient.ECROption
+	if verbose {
+		ecrOpts = append(ecrOpts, awsclient.WithECRStatusFunc(statusf))
+	}
+	ecrOpts = append(ecrOpts, awsclient.WithECRConcurrency(concurrency))
+	ecrClient := client.ECRClient(ecrOpts...)
+
+	statusf("Fetching ECR repositories...")
+	repos, err := ecrClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing ECR repositories: %w", err)
+	}
+
+	sort.Slice(repos, func(i, j int) bool {
+		return repos[i].RepositoryName < repos[j].RepositoryName
+	})
+	snap.ECR = repos
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
