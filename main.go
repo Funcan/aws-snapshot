@@ -89,6 +89,12 @@ var snapshotECSCmd = &cobra.Command{
 	RunE:  runSnapshotECS,
 }
 
+var snapshotELBCmd = &cobra.Command{
+	Use:   "elb",
+	Short: "Snapshot load balancers and target groups",
+	RunE:  runSnapshotELB,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -111,6 +117,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotLambdaCmd)
 	snapshotCmd.AddCommand(snapshotECRCmd)
 	snapshotCmd.AddCommand(snapshotECSCmd)
+	snapshotCmd.AddCommand(snapshotELBCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -142,6 +149,7 @@ type Snapshot struct {
 	Lambda      []awsclient.FunctionSummary   `json:"Lambda,omitempty"`
 	ECR         []awsclient.RepositorySummary `json:"ECR,omitempty"`
 	ECS         *awsclient.ECSSummary         `json:"ECS,omitempty"`
+	ELB         *awsclient.ELBSummary         `json:"ELB,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -466,6 +474,43 @@ func runSnapshotECS(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotELB(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var elbOpts []awsclient.ELBOption
+	if verbose {
+		elbOpts = append(elbOpts, awsclient.WithELBStatusFunc(statusf))
+	}
+	elbOpts = append(elbOpts, awsclient.WithELBConcurrency(concurrency))
+	elbClient := client.ELBClient(elbOpts...)
+
+	statusf("Fetching load balancers and target groups...")
+	elbSummary, err := elbClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing ELB resources: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(elbSummary.LoadBalancers, func(i, j int) bool {
+		return elbSummary.LoadBalancers[i].LoadBalancerName < elbSummary.LoadBalancers[j].LoadBalancerName
+	})
+	sort.Slice(elbSummary.TargetGroups, func(i, j int) bool {
+		return elbSummary.TargetGroups[i].TargetGroupName < elbSummary.TargetGroups[j].TargetGroupName
+	})
+
+	if err := outputSnapshot(Snapshot{ELB: elbSummary}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -656,6 +701,28 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		})
 	}
 	snap.ECS = ecsSummary
+
+	// Fetch ELB load balancers and target groups
+	var elbOpts []awsclient.ELBOption
+	if verbose {
+		elbOpts = append(elbOpts, awsclient.WithELBStatusFunc(statusf))
+	}
+	elbOpts = append(elbOpts, awsclient.WithELBConcurrency(concurrency))
+	elbClient := client.ELBClient(elbOpts...)
+
+	statusf("Fetching load balancers and target groups...")
+	elbSummary, err := elbClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing ELB resources: %w", err)
+	}
+
+	sort.Slice(elbSummary.LoadBalancers, func(i, j int) bool {
+		return elbSummary.LoadBalancers[i].LoadBalancerName < elbSummary.LoadBalancers[j].LoadBalancerName
+	})
+	sort.Slice(elbSummary.TargetGroups, func(i, j int) bool {
+		return elbSummary.TargetGroups[i].TargetGroupName < elbSummary.TargetGroups[j].TargetGroupName
+	})
+	snap.ELB = elbSummary
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
