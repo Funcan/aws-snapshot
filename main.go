@@ -131,6 +131,12 @@ var snapshotSQSCmd = &cobra.Command{
 	RunE:  runSnapshotSQS,
 }
 
+var snapshotSNSCmd = &cobra.Command{
+	Use:   "sns",
+	Short: "Snapshot SNS topics",
+	RunE:  runSnapshotSNS,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -160,6 +166,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotCloudFrontCmd)
 	snapshotCmd.AddCommand(snapshotAPIGatewayCmd)
 	snapshotCmd.AddCommand(snapshotSQSCmd)
+	snapshotCmd.AddCommand(snapshotSNSCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -198,6 +205,7 @@ type Snapshot struct {
 	CloudFront  []awsclient.DistributionSummary `json:"CloudFront,omitempty"`
 	APIGateway  *awsclient.APIGatewaySummary    `json:"APIGateway,omitempty"`
 	SQS         []awsclient.QueueSummary        `json:"SQS,omitempty"`
+	SNS         []awsclient.TopicSummary        `json:"SNS,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -787,6 +795,40 @@ func runSnapshotSQS(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotSNS(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var snsOpts []awsclient.SNSOption
+	if verbose {
+		snsOpts = append(snsOpts, awsclient.WithSNSStatusFunc(statusf))
+	}
+	snsOpts = append(snsOpts, awsclient.WithSNSConcurrency(concurrency))
+	snsClient := client.SNSClient(snsOpts...)
+
+	statusf("Fetching SNS topics...")
+	topics, err := snsClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing SNS topics: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(topics, func(i, j int) bool {
+		return topics[i].Name < topics[j].Name
+	})
+
+	if err := outputSnapshot(Snapshot{SNS: topics}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -1135,6 +1177,25 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return queues[i].Name < queues[j].Name
 	})
 	snap.SQS = queues
+
+	// Fetch SNS topics
+	var snsOpts []awsclient.SNSOption
+	if verbose {
+		snsOpts = append(snsOpts, awsclient.WithSNSStatusFunc(statusf))
+	}
+	snsOpts = append(snsOpts, awsclient.WithSNSConcurrency(concurrency))
+	snsClient := client.SNSClient(snsOpts...)
+
+	statusf("Fetching SNS topics...")
+	topics, err := snsClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing SNS topics: %w", err)
+	}
+
+	sort.Slice(topics, func(i, j int) bool {
+		return topics[i].Name < topics[j].Name
+	})
+	snap.SNS = topics
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
