@@ -41,6 +41,12 @@ var snapshotS3Cmd = &cobra.Command{
 	RunE:  runSnapshotS3,
 }
 
+var snapshotEKSCmd = &cobra.Command{
+	Use:   "eks",
+	Short: "Snapshot EKS clusters",
+	RunE:  runSnapshotEKS,
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS profile to use")
 	rootCmd.PersistentFlags().StringVar(&region, "region", "", "AWS region to use")
@@ -49,6 +55,7 @@ func init() {
 
 	rootCmd.AddCommand(snapshotCmd)
 	snapshotCmd.AddCommand(snapshotS3Cmd)
+	snapshotCmd.AddCommand(snapshotEKSCmd)
 }
 
 func buildClient(ctx context.Context) (*awsclient.Client, error) {
@@ -98,6 +105,42 @@ func runSnapshotS3(cmd *cobra.Command, args []string) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(buckets); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
+func runSnapshotEKS(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var eksOpts []awsclient.EKSOption
+	if verbose {
+		eksOpts = append(eksOpts, awsclient.WithEKSStatusFunc(statusf))
+	}
+	eksOpts = append(eksOpts, awsclient.WithEKSConcurrency(concurrency))
+	eksClient := client.EKSClient(eksOpts...)
+
+	statusf("Fetching EKS clusters...")
+	clusters, err := eksClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing EKS clusters: %w", err)
+	}
+
+	// Sort by cluster name for consistent diffs
+	sort.Slice(clusters, func(i, j int) bool {
+		return clusters[i].Name < clusters[j].Name
+	})
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(clusters); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
 	}
 
