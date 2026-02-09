@@ -65,6 +65,12 @@ var snapshotElastiCacheCmd = &cobra.Command{
 	RunE:  runSnapshotElastiCache,
 }
 
+var snapshotDynamoDBCmd = &cobra.Command{
+	Use:   "dynamodb",
+	Short: "Snapshot DynamoDB tables",
+	RunE:  runSnapshotDynamoDB,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -83,6 +89,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotRDSCmd)
 	snapshotCmd.AddCommand(snapshotOpenSearchCmd)
 	snapshotCmd.AddCommand(snapshotElastiCacheCmd)
+	snapshotCmd.AddCommand(snapshotDynamoDBCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -110,6 +117,7 @@ type Snapshot struct {
 	RDS         *awsclient.RDSSummary         `json:"RDS,omitempty"`
 	OpenSearch  []awsclient.DomainSummary     `json:"OpenSearch,omitempty"`
 	ElastiCache *awsclient.ElastiCacheSummary `json:"ElastiCache,omitempty"`
+	DynamoDB    []awsclient.TableSummary      `json:"DynamoDB,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -292,6 +300,40 @@ func runSnapshotElastiCache(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotDynamoDB(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var ddbOpts []awsclient.DynamoDBOption
+	if verbose {
+		ddbOpts = append(ddbOpts, awsclient.WithDynamoDBStatusFunc(statusf))
+	}
+	ddbOpts = append(ddbOpts, awsclient.WithDynamoDBConcurrency(concurrency))
+	ddbClient := client.DynamoDBClient(ddbOpts...)
+
+	statusf("Fetching DynamoDB tables...")
+	tables, err := ddbClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing DynamoDB tables: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(tables, func(i, j int) bool {
+		return tables[i].TableName < tables[j].TableName
+	})
+
+	if err := outputSnapshot(Snapshot{DynamoDB: tables}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -401,6 +443,25 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return ecSummary.ReplicationGroups[i].ReplicationGroupId < ecSummary.ReplicationGroups[j].ReplicationGroupId
 	})
 	snap.ElastiCache = ecSummary
+
+	// Fetch DynamoDB tables
+	var ddbOpts []awsclient.DynamoDBOption
+	if verbose {
+		ddbOpts = append(ddbOpts, awsclient.WithDynamoDBStatusFunc(statusf))
+	}
+	ddbOpts = append(ddbOpts, awsclient.WithDynamoDBConcurrency(concurrency))
+	ddbClient := client.DynamoDBClient(ddbOpts...)
+
+	statusf("Fetching DynamoDB tables...")
+	tables, err := ddbClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing DynamoDB tables: %w", err)
+	}
+
+	sort.Slice(tables, func(i, j int) bool {
+		return tables[i].TableName < tables[j].TableName
+	})
+	snap.DynamoDB = tables
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
