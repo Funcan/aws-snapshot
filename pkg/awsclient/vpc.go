@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -204,6 +205,9 @@ func (v *VPCClient) Summarise(ctx context.Context) ([]VPCSummary, error) {
 
 	// Process VPCs concurrently
 	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+
 	for i := 0; i < v.concurrency && i < total; i++ {
 		wg.Add(1)
 		go func() {
@@ -216,7 +220,16 @@ func (v *VPCClient) Summarise(ctx context.Context) ([]VPCSummary, error) {
 				}
 
 				vpc := vpcs[idx]
-				summaries[idx] = v.describeVPC(ctx, vpc)
+				summary, err := v.describeVPC(ctx, vpc)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("describing VPC %s: %w", vpc.id, err)
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				v.status("[%d/%d] Processed VPC: %s", n, total, vpc.id)
@@ -226,7 +239,11 @@ func (v *VPCClient) Summarise(ctx context.Context) ([]VPCSummary, error) {
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	// Filter out unprocessed summaries (context cancellation)
 	result := make([]VPCSummary, 0, total)
 	for _, s := range summaries {
 		if s.VpcId != "" {
@@ -241,15 +258,18 @@ type vpcInfo struct {
 	id string
 }
 
-func (v *VPCClient) describeVPC(ctx context.Context, vpc vpcInfo) VPCSummary {
+func (v *VPCClient) describeVPC(ctx context.Context, vpc vpcInfo) (VPCSummary, error) {
 	summary := VPCSummary{VpcId: vpc.id}
 
 	// Get VPC details
 	descResp, err := v.client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
 		VpcIds: []string{vpc.id},
 	})
-	if err != nil || len(descResp.Vpcs) == 0 {
-		return summary
+	if err != nil {
+		return summary, fmt.Errorf("DescribeVpcs: %w", err)
+	}
+	if len(descResp.Vpcs) == 0 {
+		return summary, fmt.Errorf("VPC %s not found", vpc.id)
 	}
 
 	vpcDetail := descResp.Vpcs[0]
@@ -270,7 +290,10 @@ func (v *VPCClient) describeVPC(ctx context.Context, vpc vpcInfo) VPCSummary {
 		VpcId:     &vpc.id,
 		Attribute: "enableDnsHostnames",
 	})
-	if err == nil && dnsHostnames.EnableDnsHostnames != nil {
+	if err != nil {
+		return summary, fmt.Errorf("DescribeVpcAttribute (enableDnsHostnames): %w", err)
+	}
+	if dnsHostnames.EnableDnsHostnames != nil {
 		summary.EnableDnsHostnames = aws.ToBool(dnsHostnames.EnableDnsHostnames.Value)
 	}
 
@@ -278,29 +301,56 @@ func (v *VPCClient) describeVPC(ctx context.Context, vpc vpcInfo) VPCSummary {
 		VpcId:     &vpc.id,
 		Attribute: "enableDnsSupport",
 	})
-	if err == nil && dnsSupport.EnableDnsSupport != nil {
+	if err != nil {
+		return summary, fmt.Errorf("DescribeVpcAttribute (enableDnsSupport): %w", err)
+	}
+	if dnsSupport.EnableDnsSupport != nil {
 		summary.EnableDnsSupport = aws.ToBool(dnsSupport.EnableDnsSupport.Value)
 	}
 
 	// Get subnets
-	summary.Subnets = v.listSubnets(ctx, vpc.id)
+	subnets, err := v.listSubnets(ctx, vpc.id)
+	if err != nil {
+		return summary, err
+	}
+	summary.Subnets = subnets
 
 	// Get route tables
-	summary.RouteTables = v.listRouteTables(ctx, vpc.id)
+	routeTables, err := v.listRouteTables(ctx, vpc.id)
+	if err != nil {
+		return summary, err
+	}
+	summary.RouteTables = routeTables
 
 	// Get security groups
-	summary.SecurityGroups = v.listSecurityGroups(ctx, vpc.id)
+	securityGroups, err := v.listSecurityGroups(ctx, vpc.id)
+	if err != nil {
+		return summary, err
+	}
+	summary.SecurityGroups = securityGroups
 
 	// Get internet gateways
-	summary.InternetGateways = v.listInternetGateways(ctx, vpc.id)
+	internetGateways, err := v.listInternetGateways(ctx, vpc.id)
+	if err != nil {
+		return summary, err
+	}
+	summary.InternetGateways = internetGateways
 
 	// Get NAT gateways
-	summary.NatGateways = v.listNatGateways(ctx, vpc.id)
+	natGateways, err := v.listNatGateways(ctx, vpc.id)
+	if err != nil {
+		return summary, err
+	}
+	summary.NatGateways = natGateways
 
 	// Get VPC endpoints
-	summary.VpcEndpoints = v.listVpcEndpoints(ctx, vpc.id)
+	vpcEndpoints, err := v.listVpcEndpoints(ctx, vpc.id)
+	if err != nil {
+		return summary, err
+	}
+	summary.VpcEndpoints = vpcEndpoints
 
-	return summary
+	return summary, nil
 }
 
 func tagsToMap(tags []types.Tag) map[string]string {
@@ -314,7 +364,7 @@ func tagsToMap(tags []types.Tag) map[string]string {
 	return m
 }
 
-func (v *VPCClient) listSubnets(ctx context.Context, vpcId string) []SubnetSummary {
+func (v *VPCClient) listSubnets(ctx context.Context, vpcId string) ([]SubnetSummary, error) {
 	var subnets []SubnetSummary
 
 	resp, err := v.client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
@@ -323,7 +373,7 @@ func (v *VPCClient) listSubnets(ctx context.Context, vpcId string) []SubnetSumma
 		},
 	})
 	if err != nil {
-		return subnets
+		return nil, fmt.Errorf("DescribeSubnets: %w", err)
 	}
 
 	for _, subnet := range resp.Subnets {
@@ -338,10 +388,10 @@ func (v *VPCClient) listSubnets(ctx context.Context, vpcId string) []SubnetSumma
 		})
 	}
 
-	return subnets
+	return subnets, nil
 }
 
-func (v *VPCClient) listRouteTables(ctx context.Context, vpcId string) []RouteTableSummary {
+func (v *VPCClient) listRouteTables(ctx context.Context, vpcId string) ([]RouteTableSummary, error) {
 	var tables []RouteTableSummary
 
 	resp, err := v.client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{
@@ -350,7 +400,7 @@ func (v *VPCClient) listRouteTables(ctx context.Context, vpcId string) []RouteTa
 		},
 	})
 	if err != nil {
-		return tables
+		return nil, fmt.Errorf("DescribeRouteTables: %w", err)
 	}
 
 	for _, rt := range resp.RouteTables {
@@ -385,10 +435,10 @@ func (v *VPCClient) listRouteTables(ctx context.Context, vpcId string) []RouteTa
 		tables = append(tables, table)
 	}
 
-	return tables
+	return tables, nil
 }
 
-func (v *VPCClient) listSecurityGroups(ctx context.Context, vpcId string) []SecurityGroupSummary {
+func (v *VPCClient) listSecurityGroups(ctx context.Context, vpcId string) ([]SecurityGroupSummary, error) {
 	var groups []SecurityGroupSummary
 
 	resp, err := v.client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
@@ -397,7 +447,7 @@ func (v *VPCClient) listSecurityGroups(ctx context.Context, vpcId string) []Secu
 		},
 	})
 	if err != nil {
-		return groups
+		return nil, fmt.Errorf("DescribeSecurityGroups: %w", err)
 	}
 
 	for _, sg := range resp.SecurityGroups {
@@ -419,7 +469,7 @@ func (v *VPCClient) listSecurityGroups(ctx context.Context, vpcId string) []Secu
 		groups = append(groups, group)
 	}
 
-	return groups
+	return groups, nil
 }
 
 func convertRule(rule types.IpPermission) SecurityGroupRule {
@@ -451,7 +501,7 @@ func convertRule(rule types.IpPermission) SecurityGroupRule {
 	return r
 }
 
-func (v *VPCClient) listInternetGateways(ctx context.Context, vpcId string) []InternetGatewaySummary {
+func (v *VPCClient) listInternetGateways(ctx context.Context, vpcId string) ([]InternetGatewaySummary, error) {
 	var gateways []InternetGatewaySummary
 
 	resp, err := v.client.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{
@@ -460,7 +510,7 @@ func (v *VPCClient) listInternetGateways(ctx context.Context, vpcId string) []In
 		},
 	})
 	if err != nil {
-		return gateways
+		return nil, fmt.Errorf("DescribeInternetGateways: %w", err)
 	}
 
 	for _, igw := range resp.InternetGateways {
@@ -470,10 +520,10 @@ func (v *VPCClient) listInternetGateways(ctx context.Context, vpcId string) []In
 		})
 	}
 
-	return gateways
+	return gateways, nil
 }
 
-func (v *VPCClient) listNatGateways(ctx context.Context, vpcId string) []NatGatewaySummary {
+func (v *VPCClient) listNatGateways(ctx context.Context, vpcId string) ([]NatGatewaySummary, error) {
 	var gateways []NatGatewaySummary
 
 	resp, err := v.client.DescribeNatGateways(ctx, &ec2.DescribeNatGatewaysInput{
@@ -482,7 +532,7 @@ func (v *VPCClient) listNatGateways(ctx context.Context, vpcId string) []NatGate
 		},
 	})
 	if err != nil {
-		return gateways
+		return nil, fmt.Errorf("DescribeNatGateways: %w", err)
 	}
 
 	for _, nat := range resp.NatGateways {
@@ -506,10 +556,10 @@ func (v *VPCClient) listNatGateways(ctx context.Context, vpcId string) []NatGate
 		gateways = append(gateways, gw)
 	}
 
-	return gateways
+	return gateways, nil
 }
 
-func (v *VPCClient) listVpcEndpoints(ctx context.Context, vpcId string) []VPCEndpointSummary {
+func (v *VPCClient) listVpcEndpoints(ctx context.Context, vpcId string) ([]VPCEndpointSummary, error) {
 	var endpoints []VPCEndpointSummary
 
 	resp, err := v.client.DescribeVpcEndpoints(ctx, &ec2.DescribeVpcEndpointsInput{
@@ -518,7 +568,7 @@ func (v *VPCClient) listVpcEndpoints(ctx context.Context, vpcId string) []VPCEnd
 		},
 	})
 	if err != nil {
-		return endpoints
+		return nil, fmt.Errorf("DescribeVpcEndpoints: %w", err)
 	}
 
 	for _, ep := range resp.VpcEndpoints {
@@ -539,5 +589,5 @@ func (v *VPCClient) listVpcEndpoints(ctx context.Context, vpcId string) []VPCEnd
 		endpoints = append(endpoints, endpoint)
 	}
 
-	return endpoints
+	return endpoints, nil
 }

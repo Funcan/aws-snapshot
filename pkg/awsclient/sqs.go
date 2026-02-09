@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -122,6 +123,9 @@ func (s *SQSClient) Summarise(ctx context.Context) ([]QueueSummary, error) {
 
 	// Process queues concurrently
 	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+
 	for i := 0; i < s.concurrency && i < total; i++ {
 		wg.Add(1)
 		go func() {
@@ -134,17 +138,30 @@ func (s *SQSClient) Summarise(ctx context.Context) ([]QueueSummary, error) {
 				}
 
 				url := queueURLs[idx]
-				summaries[idx] = s.describeQueue(ctx, url)
+				summary, err := s.describeQueue(ctx, url)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("describing queue %s: %w", url, err)
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
-				s.status("[%d/%d] Processed queue: %s", n, total, summaries[idx].Name)
+				s.status("[%d/%d] Processed queue: %s", n, total, summary.Name)
 			}
 		}()
 	}
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	// Filter out unprocessed summaries (context cancellation)
 	result := make([]QueueSummary, 0, total)
 	for _, sum := range summaries {
 		if sum.URL != "" {
@@ -155,7 +172,7 @@ func (s *SQSClient) Summarise(ctx context.Context) ([]QueueSummary, error) {
 	return result, nil
 }
 
-func (s *SQSClient) describeQueue(ctx context.Context, queueURL string) QueueSummary {
+func (s *SQSClient) describeQueue(ctx context.Context, queueURL string) (QueueSummary, error) {
 	summary := QueueSummary{
 		URL: queueURL,
 	}
@@ -174,7 +191,7 @@ func (s *SQSClient) describeQueue(ctx context.Context, queueURL string) QueueSum
 		},
 	})
 	if err != nil {
-		return summary
+		return summary, fmt.Errorf("GetQueueAttributes: %w", err)
 	}
 
 	attrs := attrsResp.Attributes
@@ -205,11 +222,14 @@ func (s *SQSClient) describeQueue(ctx context.Context, queueURL string) QueueSum
 	tagsResp, err := s.client.ListQueueTags(ctx, &sqs.ListQueueTagsInput{
 		QueueUrl: &queueURL,
 	})
-	if err == nil && len(tagsResp.Tags) > 0 {
+	if err != nil {
+		return summary, fmt.Errorf("ListQueueTags: %w", err)
+	}
+	if len(tagsResp.Tags) > 0 {
 		summary.Tags = tagsResp.Tags
 	}
 
-	return summary
+	return summary, nil
 }
 
 func splitQueueURL(url string) []string {

@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -127,6 +128,9 @@ func (s *SNSClient) Summarise(ctx context.Context) ([]TopicSummary, error) {
 
 	// Process topics concurrently
 	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+
 	for i := 0; i < s.concurrency && i < total; i++ {
 		wg.Add(1)
 		go func() {
@@ -139,17 +143,30 @@ func (s *SNSClient) Summarise(ctx context.Context) ([]TopicSummary, error) {
 				}
 
 				arn := topicArns[idx]
-				summaries[idx] = s.describeTopic(ctx, arn)
+				summary, err := s.describeTopic(ctx, arn)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("describing topic %s: %w", arn, err)
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
-				s.status("[%d/%d] Processed topic: %s", n, total, summaries[idx].Name)
+				s.status("[%d/%d] Processed topic: %s", n, total, summary.Name)
 			}
 		}()
 	}
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	// Filter out unprocessed summaries (context cancellation)
 	result := make([]TopicSummary, 0, total)
 	for _, sum := range summaries {
 		if sum.Arn != "" {
@@ -160,7 +177,7 @@ func (s *SNSClient) Summarise(ctx context.Context) ([]TopicSummary, error) {
 	return result, nil
 }
 
-func (s *SNSClient) describeTopic(ctx context.Context, topicArn string) TopicSummary {
+func (s *SNSClient) describeTopic(ctx context.Context, topicArn string) (TopicSummary, error) {
 	summary := TopicSummary{
 		Arn:  topicArn,
 		Name: extractTopicName(topicArn),
@@ -171,7 +188,7 @@ func (s *SNSClient) describeTopic(ctx context.Context, topicArn string) TopicSum
 		TopicArn: &topicArn,
 	})
 	if err != nil {
-		return summary
+		return summary, fmt.Errorf("GetTopicAttributes: %w", err)
 	}
 
 	attrs := attrsResp.Attributes
@@ -200,7 +217,7 @@ func (s *SNSClient) describeTopic(ctx context.Context, topicArn string) TopicSum
 			NextToken: nextToken,
 		})
 		if err != nil {
-			break
+			return summary, fmt.Errorf("ListSubscriptionsByTopic: %w", err)
 		}
 
 		for _, sub := range subsResp.Subscriptions {
@@ -223,14 +240,17 @@ func (s *SNSClient) describeTopic(ctx context.Context, topicArn string) TopicSum
 	tagsResp, err := s.client.ListTagsForResource(ctx, &sns.ListTagsForResourceInput{
 		ResourceArn: &topicArn,
 	})
-	if err == nil && len(tagsResp.Tags) > 0 {
+	if err != nil {
+		return summary, fmt.Errorf("ListTagsForResource: %w", err)
+	}
+	if len(tagsResp.Tags) > 0 {
 		summary.Tags = make(map[string]string)
 		for _, tag := range tagsResp.Tags {
 			summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
 		}
 	}
 
-	return summary
+	return summary, nil
 }
 
 func extractTopicName(arn string) string {
