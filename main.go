@@ -137,6 +137,12 @@ var snapshotSNSCmd = &cobra.Command{
 	RunE:  runSnapshotSNS,
 }
 
+var snapshotEventBridgeCmd = &cobra.Command{
+	Use:   "eventbridge",
+	Short: "Snapshot EventBridge event buses and rules",
+	RunE:  runSnapshotEventBridge,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -167,6 +173,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotAPIGatewayCmd)
 	snapshotCmd.AddCommand(snapshotSQSCmd)
 	snapshotCmd.AddCommand(snapshotSNSCmd)
+	snapshotCmd.AddCommand(snapshotEventBridgeCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -206,6 +213,7 @@ type Snapshot struct {
 	APIGateway  *awsclient.APIGatewaySummary    `json:"APIGateway,omitempty"`
 	SQS         []awsclient.QueueSummary        `json:"SQS,omitempty"`
 	SNS         []awsclient.TopicSummary        `json:"SNS,omitempty"`
+	EventBridge *awsclient.EventBridgeSummary   `json:"EventBridge,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -829,6 +837,45 @@ func runSnapshotSNS(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotEventBridge(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var ebOpts []awsclient.EventBridgeOption
+	if verbose {
+		ebOpts = append(ebOpts, awsclient.WithEventBridgeStatusFunc(statusf))
+	}
+	ebOpts = append(ebOpts, awsclient.WithEventBridgeConcurrency(concurrency))
+	ebClient := client.EventBridgeClient(ebOpts...)
+
+	statusf("Fetching EventBridge event buses...")
+	summary, err := ebClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing EventBridge event buses: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(summary.EventBuses, func(i, j int) bool {
+		return summary.EventBuses[i].Name < summary.EventBuses[j].Name
+	})
+	for idx := range summary.EventBuses {
+		sort.Slice(summary.EventBuses[idx].Rules, func(i, j int) bool {
+			return summary.EventBuses[idx].Rules[i].Name < summary.EventBuses[idx].Rules[j].Name
+		})
+	}
+
+	if err := outputSnapshot(Snapshot{EventBridge: summary}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -1196,6 +1243,30 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return topics[i].Name < topics[j].Name
 	})
 	snap.SNS = topics
+
+	// Fetch EventBridge event buses
+	var ebOpts []awsclient.EventBridgeOption
+	if verbose {
+		ebOpts = append(ebOpts, awsclient.WithEventBridgeStatusFunc(statusf))
+	}
+	ebOpts = append(ebOpts, awsclient.WithEventBridgeConcurrency(concurrency))
+	ebClient := client.EventBridgeClient(ebOpts...)
+
+	statusf("Fetching EventBridge event buses...")
+	ebSummary, err := ebClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing EventBridge event buses: %w", err)
+	}
+
+	sort.Slice(ebSummary.EventBuses, func(i, j int) bool {
+		return ebSummary.EventBuses[i].Name < ebSummary.EventBuses[j].Name
+	})
+	for idx := range ebSummary.EventBuses {
+		sort.Slice(ebSummary.EventBuses[idx].Rules, func(i, j int) bool {
+			return ebSummary.EventBuses[idx].Rules[i].Name < ebSummary.EventBuses[idx].Rules[j].Name
+		})
+	}
+	snap.EventBridge = ebSummary
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
