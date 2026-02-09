@@ -47,6 +47,12 @@ var snapshotEKSCmd = &cobra.Command{
 	RunE:  runSnapshotEKS,
 }
 
+var snapshotAllCmd = &cobra.Command{
+	Use:   "all",
+	Short: "Snapshot all supported resources",
+	RunE:  runSnapshotAll,
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS profile to use")
 	rootCmd.PersistentFlags().StringVar(&region, "region", "", "AWS region to use")
@@ -56,6 +62,7 @@ func init() {
 	rootCmd.AddCommand(snapshotCmd)
 	snapshotCmd.AddCommand(snapshotS3Cmd)
 	snapshotCmd.AddCommand(snapshotEKSCmd)
+	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
 func buildClient(ctx context.Context) (*awsclient.Client, error) {
@@ -73,6 +80,18 @@ func statusf(format string, args ...any) {
 	if verbose {
 		fmt.Fprintf(os.Stderr, format+"\n", args...)
 	}
+}
+
+// Snapshot represents the top-level output structure.
+type Snapshot struct {
+	S3  []awsclient.BucketSummary  `json:"S3,omitempty"`
+	EKS []awsclient.ClusterSummary `json:"EKS,omitempty"`
+}
+
+func outputSnapshot(snap Snapshot) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(snap)
 }
 
 func runSnapshotS3(cmd *cobra.Command, args []string) error {
@@ -102,9 +121,7 @@ func runSnapshotS3(cmd *cobra.Command, args []string) error {
 		return buckets[i].Name < buckets[j].Name
 	})
 
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(buckets); err != nil {
+	if err := outputSnapshot(Snapshot{S3: buckets}); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
 	}
 
@@ -138,9 +155,63 @@ func runSnapshotEKS(cmd *cobra.Command, args []string) error {
 		return clusters[i].Name < clusters[j].Name
 	})
 
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(clusters); err != nil {
+	if err := outputSnapshot(Snapshot{EKS: clusters}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
+func runSnapshotAll(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var snap Snapshot
+
+	// Fetch S3 buckets
+	var s3Opts []awsclient.S3Option
+	if verbose {
+		s3Opts = append(s3Opts, awsclient.WithStatusFunc(statusf))
+	}
+	s3Opts = append(s3Opts, awsclient.WithConcurrency(concurrency))
+	s3client := client.S3Client(s3Opts...)
+
+	statusf("Fetching S3 buckets...")
+	buckets, err := s3client.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing S3 buckets: %w", err)
+	}
+
+	sort.Slice(buckets, func(i, j int) bool {
+		return buckets[i].Name < buckets[j].Name
+	})
+	snap.S3 = buckets
+
+	// Fetch EKS clusters
+	var eksOpts []awsclient.EKSOption
+	if verbose {
+		eksOpts = append(eksOpts, awsclient.WithEKSStatusFunc(statusf))
+	}
+	eksOpts = append(eksOpts, awsclient.WithEKSConcurrency(concurrency))
+	eksClient := client.EKSClient(eksOpts...)
+
+	statusf("Fetching EKS clusters...")
+	clusters, err := eksClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing EKS clusters: %w", err)
+	}
+
+	sort.Slice(clusters, func(i, j int) bool {
+		return clusters[i].Name < clusters[j].Name
+	})
+	snap.EKS = clusters
+
+	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
 	}
 
