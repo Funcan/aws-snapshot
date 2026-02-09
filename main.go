@@ -71,6 +71,12 @@ var snapshotDynamoDBCmd = &cobra.Command{
 	RunE:  runSnapshotDynamoDB,
 }
 
+var snapshotLambdaCmd = &cobra.Command{
+	Use:   "lambda",
+	Short: "Snapshot Lambda functions",
+	RunE:  runSnapshotLambda,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -90,6 +96,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotOpenSearchCmd)
 	snapshotCmd.AddCommand(snapshotElastiCacheCmd)
 	snapshotCmd.AddCommand(snapshotDynamoDBCmd)
+	snapshotCmd.AddCommand(snapshotLambdaCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -118,6 +125,7 @@ type Snapshot struct {
 	OpenSearch  []awsclient.DomainSummary     `json:"OpenSearch,omitempty"`
 	ElastiCache *awsclient.ElastiCacheSummary `json:"ElastiCache,omitempty"`
 	DynamoDB    []awsclient.TableSummary      `json:"DynamoDB,omitempty"`
+	Lambda      []awsclient.FunctionSummary   `json:"Lambda,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -334,6 +342,40 @@ func runSnapshotDynamoDB(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotLambda(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var lambdaOpts []awsclient.LambdaOption
+	if verbose {
+		lambdaOpts = append(lambdaOpts, awsclient.WithLambdaStatusFunc(statusf))
+	}
+	lambdaOpts = append(lambdaOpts, awsclient.WithLambdaConcurrency(concurrency))
+	lambdaClient := client.LambdaClient(lambdaOpts...)
+
+	statusf("Fetching Lambda functions...")
+	functions, err := lambdaClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing Lambda functions: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(functions, func(i, j int) bool {
+		return functions[i].FunctionName < functions[j].FunctionName
+	})
+
+	if err := outputSnapshot(Snapshot{Lambda: functions}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -462,6 +504,25 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return tables[i].TableName < tables[j].TableName
 	})
 	snap.DynamoDB = tables
+
+	// Fetch Lambda functions
+	var lambdaOpts []awsclient.LambdaOption
+	if verbose {
+		lambdaOpts = append(lambdaOpts, awsclient.WithLambdaStatusFunc(statusf))
+	}
+	lambdaOpts = append(lambdaOpts, awsclient.WithLambdaConcurrency(concurrency))
+	lambdaClient := client.LambdaClient(lambdaOpts...)
+
+	statusf("Fetching Lambda functions...")
+	functions, err := lambdaClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing Lambda functions: %w", err)
+	}
+
+	sort.Slice(functions, func(i, j int) bool {
+		return functions[i].FunctionName < functions[j].FunctionName
+	})
+	snap.Lambda = functions
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
