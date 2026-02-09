@@ -95,6 +95,12 @@ var snapshotELBCmd = &cobra.Command{
 	RunE:  runSnapshotELB,
 }
 
+var snapshotRoute53Cmd = &cobra.Command{
+	Use:   "route53",
+	Short: "Snapshot Route53 hosted zones and records",
+	RunE:  runSnapshotRoute53,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -118,6 +124,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotECRCmd)
 	snapshotCmd.AddCommand(snapshotECSCmd)
 	snapshotCmd.AddCommand(snapshotELBCmd)
+	snapshotCmd.AddCommand(snapshotRoute53Cmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -150,6 +157,7 @@ type Snapshot struct {
 	ECR         []awsclient.RepositorySummary `json:"ECR,omitempty"`
 	ECS         *awsclient.ECSSummary         `json:"ECS,omitempty"`
 	ELB         *awsclient.ELBSummary         `json:"ELB,omitempty"`
+	Route53     []awsclient.HostedZoneSummary `json:"Route53,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -511,6 +519,49 @@ func runSnapshotELB(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotRoute53(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var r53Opts []awsclient.Route53Option
+	if verbose {
+		r53Opts = append(r53Opts, awsclient.WithRoute53StatusFunc(statusf))
+	}
+	r53Opts = append(r53Opts, awsclient.WithRoute53Concurrency(concurrency))
+	r53Client := client.Route53Client(r53Opts...)
+
+	statusf("Fetching Route53 hosted zones...")
+	zones, err := r53Client.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing Route53 zones: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(zones, func(i, j int) bool {
+		return zones[i].Name < zones[j].Name
+	})
+	// Sort record sets within each zone
+	for i := range zones {
+		sort.Slice(zones[i].RecordSets, func(a, b int) bool {
+			if zones[i].RecordSets[a].Name != zones[i].RecordSets[b].Name {
+				return zones[i].RecordSets[a].Name < zones[i].RecordSets[b].Name
+			}
+			return zones[i].RecordSets[a].Type < zones[i].RecordSets[b].Type
+		})
+	}
+
+	if err := outputSnapshot(Snapshot{Route53: zones}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -723,6 +774,33 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return elbSummary.TargetGroups[i].TargetGroupName < elbSummary.TargetGroups[j].TargetGroupName
 	})
 	snap.ELB = elbSummary
+
+	// Fetch Route53 hosted zones
+	var r53Opts []awsclient.Route53Option
+	if verbose {
+		r53Opts = append(r53Opts, awsclient.WithRoute53StatusFunc(statusf))
+	}
+	r53Opts = append(r53Opts, awsclient.WithRoute53Concurrency(concurrency))
+	r53Client := client.Route53Client(r53Opts...)
+
+	statusf("Fetching Route53 hosted zones...")
+	zones, err := r53Client.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing Route53 zones: %w", err)
+	}
+
+	sort.Slice(zones, func(i, j int) bool {
+		return zones[i].Name < zones[j].Name
+	})
+	for i := range zones {
+		sort.Slice(zones[i].RecordSets, func(a, b int) bool {
+			if zones[i].RecordSets[a].Name != zones[i].RecordSets[b].Name {
+				return zones[i].RecordSets[a].Name < zones[i].RecordSets[b].Name
+			}
+			return zones[i].RecordSets[a].Type < zones[i].RecordSets[b].Type
+		})
+	}
+	snap.Route53 = zones
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
