@@ -107,6 +107,12 @@ var snapshotMSKCmd = &cobra.Command{
 	RunE:  runSnapshotMSK,
 }
 
+var snapshotVPCCmd = &cobra.Command{
+	Use:   "vpc",
+	Short: "Snapshot VPCs and networking resources",
+	RunE:  runSnapshotVPC,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -132,6 +138,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotELBCmd)
 	snapshotCmd.AddCommand(snapshotRoute53Cmd)
 	snapshotCmd.AddCommand(snapshotMSKCmd)
+	snapshotCmd.AddCommand(snapshotVPCCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -166,6 +173,7 @@ type Snapshot struct {
 	ELB         *awsclient.ELBSummary         `json:"ELB,omitempty"`
 	Route53     []awsclient.HostedZoneSummary `json:"Route53,omitempty"`
 	MSK         []awsclient.MSKClusterSummary `json:"MSK,omitempty"`
+	VPC         []awsclient.VPCSummary        `json:"VPC,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -604,6 +612,52 @@ func runSnapshotMSK(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotVPC(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var vpcOpts []awsclient.VPCOption
+	if verbose {
+		vpcOpts = append(vpcOpts, awsclient.WithVPCStatusFunc(statusf))
+	}
+	vpcOpts = append(vpcOpts, awsclient.WithVPCConcurrency(concurrency))
+	vpcClient := client.VPCClient(vpcOpts...)
+
+	statusf("Fetching VPCs...")
+	vpcs, err := vpcClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing VPCs: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(vpcs, func(i, j int) bool {
+		return vpcs[i].VpcId < vpcs[j].VpcId
+	})
+	// Sort subnets, security groups, etc. within each VPC
+	for i := range vpcs {
+		sort.Slice(vpcs[i].Subnets, func(a, b int) bool {
+			return vpcs[i].Subnets[a].SubnetId < vpcs[i].Subnets[b].SubnetId
+		})
+		sort.Slice(vpcs[i].SecurityGroups, func(a, b int) bool {
+			return vpcs[i].SecurityGroups[a].GroupId < vpcs[i].SecurityGroups[b].GroupId
+		})
+		sort.Slice(vpcs[i].RouteTables, func(a, b int) bool {
+			return vpcs[i].RouteTables[a].RouteTableId < vpcs[i].RouteTables[b].RouteTableId
+		})
+	}
+
+	if err := outputSnapshot(Snapshot{VPC: vpcs}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -862,6 +916,36 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return mskClusters[i].ClusterName < mskClusters[j].ClusterName
 	})
 	snap.MSK = mskClusters
+
+	// Fetch VPCs
+	var vpcOpts []awsclient.VPCOption
+	if verbose {
+		vpcOpts = append(vpcOpts, awsclient.WithVPCStatusFunc(statusf))
+	}
+	vpcOpts = append(vpcOpts, awsclient.WithVPCConcurrency(concurrency))
+	vpcClient := client.VPCClient(vpcOpts...)
+
+	statusf("Fetching VPCs...")
+	vpcs, err := vpcClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing VPCs: %w", err)
+	}
+
+	sort.Slice(vpcs, func(i, j int) bool {
+		return vpcs[i].VpcId < vpcs[j].VpcId
+	})
+	for i := range vpcs {
+		sort.Slice(vpcs[i].Subnets, func(a, b int) bool {
+			return vpcs[i].Subnets[a].SubnetId < vpcs[i].Subnets[b].SubnetId
+		})
+		sort.Slice(vpcs[i].SecurityGroups, func(a, b int) bool {
+			return vpcs[i].SecurityGroups[a].GroupId < vpcs[i].SecurityGroups[b].GroupId
+		})
+		sort.Slice(vpcs[i].RouteTables, func(a, b int) bool {
+			return vpcs[i].RouteTables[a].RouteTableId < vpcs[i].RouteTables[b].RouteTableId
+		})
+	}
+	snap.VPC = vpcs
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
