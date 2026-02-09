@@ -59,6 +59,12 @@ var snapshotOpenSearchCmd = &cobra.Command{
 	RunE:  runSnapshotOpenSearch,
 }
 
+var snapshotElastiCacheCmd = &cobra.Command{
+	Use:   "elasticache",
+	Short: "Snapshot ElastiCache clusters and replication groups",
+	RunE:  runSnapshotElastiCache,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -76,6 +82,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotEKSCmd)
 	snapshotCmd.AddCommand(snapshotRDSCmd)
 	snapshotCmd.AddCommand(snapshotOpenSearchCmd)
+	snapshotCmd.AddCommand(snapshotElastiCacheCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -98,10 +105,11 @@ func statusf(format string, args ...any) {
 
 // Snapshot represents the top-level output structure.
 type Snapshot struct {
-	S3         []awsclient.BucketSummary  `json:"S3,omitempty"`
-	EKS        []awsclient.ClusterSummary `json:"EKS,omitempty"`
-	RDS        *awsclient.RDSSummary      `json:"RDS,omitempty"`
-	OpenSearch []awsclient.DomainSummary  `json:"OpenSearch,omitempty"`
+	S3          []awsclient.BucketSummary     `json:"S3,omitempty"`
+	EKS         []awsclient.ClusterSummary    `json:"EKS,omitempty"`
+	RDS         *awsclient.RDSSummary         `json:"RDS,omitempty"`
+	OpenSearch  []awsclient.DomainSummary     `json:"OpenSearch,omitempty"`
+	ElastiCache *awsclient.ElastiCacheSummary `json:"ElastiCache,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -248,6 +256,42 @@ func runSnapshotOpenSearch(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotElastiCache(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var ecOpts []awsclient.ElastiCacheOption
+	if verbose {
+		ecOpts = append(ecOpts, awsclient.WithElastiCacheStatusFunc(statusf))
+	}
+	ecClient := client.ElastiCacheClient(ecOpts...)
+
+	statusf("Fetching ElastiCache resources...")
+	ecSummary, err := ecClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing ElastiCache resources: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(ecSummary.CacheClusters, func(i, j int) bool {
+		return ecSummary.CacheClusters[i].CacheClusterId < ecSummary.CacheClusters[j].CacheClusterId
+	})
+	sort.Slice(ecSummary.ReplicationGroups, func(i, j int) bool {
+		return ecSummary.ReplicationGroups[i].ReplicationGroupId < ecSummary.ReplicationGroups[j].ReplicationGroupId
+	})
+
+	if err := outputSnapshot(Snapshot{ElastiCache: ecSummary}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -336,6 +380,27 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return domains[i].DomainName < domains[j].DomainName
 	})
 	snap.OpenSearch = domains
+
+	// Fetch ElastiCache clusters and replication groups
+	var ecOpts []awsclient.ElastiCacheOption
+	if verbose {
+		ecOpts = append(ecOpts, awsclient.WithElastiCacheStatusFunc(statusf))
+	}
+	ecClient := client.ElastiCacheClient(ecOpts...)
+
+	statusf("Fetching ElastiCache resources...")
+	ecSummary, err := ecClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing ElastiCache resources: %w", err)
+	}
+
+	sort.Slice(ecSummary.CacheClusters, func(i, j int) bool {
+		return ecSummary.CacheClusters[i].CacheClusterId < ecSummary.CacheClusters[j].CacheClusterId
+	})
+	sort.Slice(ecSummary.ReplicationGroups, func(i, j int) bool {
+		return ecSummary.ReplicationGroups[i].ReplicationGroupId < ecSummary.ReplicationGroups[j].ReplicationGroupId
+	})
+	snap.ElastiCache = ecSummary
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
