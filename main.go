@@ -143,6 +143,12 @@ var snapshotEventBridgeCmd = &cobra.Command{
 	RunE:  runSnapshotEventBridge,
 }
 
+var snapshotIAMCmd = &cobra.Command{
+	Use:   "iam",
+	Short: "Snapshot IAM users, groups, roles, and policies",
+	RunE:  runSnapshotIAM,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -174,6 +180,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotSQSCmd)
 	snapshotCmd.AddCommand(snapshotSNSCmd)
 	snapshotCmd.AddCommand(snapshotEventBridgeCmd)
+	snapshotCmd.AddCommand(snapshotIAMCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -214,6 +221,7 @@ type Snapshot struct {
 	SQS         []awsclient.QueueSummary        `json:"SQS,omitempty"`
 	SNS         []awsclient.TopicSummary        `json:"SNS,omitempty"`
 	EventBridge *awsclient.EventBridgeSummary   `json:"EventBridge,omitempty"`
+	IAM         *awsclient.IAMSummary           `json:"IAM,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -876,6 +884,49 @@ func runSnapshotEventBridge(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotIAM(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var iamOpts []awsclient.IAMOption
+	if verbose {
+		iamOpts = append(iamOpts, awsclient.WithIAMStatusFunc(statusf))
+	}
+	iamOpts = append(iamOpts, awsclient.WithIAMConcurrency(concurrency))
+	iamClient := client.IAMClient(iamOpts...)
+
+	statusf("Fetching IAM resources...")
+	summary, err := iamClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing IAM resources: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(summary.Users, func(i, j int) bool {
+		return summary.Users[i].Name < summary.Users[j].Name
+	})
+	sort.Slice(summary.Groups, func(i, j int) bool {
+		return summary.Groups[i].Name < summary.Groups[j].Name
+	})
+	sort.Slice(summary.Roles, func(i, j int) bool {
+		return summary.Roles[i].Name < summary.Roles[j].Name
+	})
+	sort.Slice(summary.Policies, func(i, j int) bool {
+		return summary.Policies[i].Name < summary.Policies[j].Name
+	})
+
+	if err := outputSnapshot(Snapshot{IAM: summary}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -1267,6 +1318,34 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		})
 	}
 	snap.EventBridge = ebSummary
+
+	// Fetch IAM resources
+	var iamOpts []awsclient.IAMOption
+	if verbose {
+		iamOpts = append(iamOpts, awsclient.WithIAMStatusFunc(statusf))
+	}
+	iamOpts = append(iamOpts, awsclient.WithIAMConcurrency(concurrency))
+	iamClient := client.IAMClient(iamOpts...)
+
+	statusf("Fetching IAM resources...")
+	iamSummary, err := iamClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing IAM resources: %w", err)
+	}
+
+	sort.Slice(iamSummary.Users, func(i, j int) bool {
+		return iamSummary.Users[i].Name < iamSummary.Users[j].Name
+	})
+	sort.Slice(iamSummary.Groups, func(i, j int) bool {
+		return iamSummary.Groups[i].Name < iamSummary.Groups[j].Name
+	})
+	sort.Slice(iamSummary.Roles, func(i, j int) bool {
+		return iamSummary.Roles[i].Name < iamSummary.Roles[j].Name
+	})
+	sort.Slice(iamSummary.Policies, func(i, j int) bool {
+		return iamSummary.Policies[i].Name < iamSummary.Policies[j].Name
+	})
+	snap.IAM = iamSummary
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
