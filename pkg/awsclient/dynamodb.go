@@ -214,8 +214,8 @@ func (d *DynamoDBClient) describeTable(ctx context.Context, tableName string) (T
 		summary.BillingMode = "PROVISIONED"
 	}
 
-	// Provisioned throughput
-	if table.ProvisionedThroughput != nil {
+	// Provisioned throughput (only for PROVISIONED billing mode)
+	if summary.BillingMode == "PROVISIONED" && table.ProvisionedThroughput != nil {
 		if table.ProvisionedThroughput.ReadCapacityUnits != nil {
 			summary.ReadCapacityUnits = *table.ProvisionedThroughput.ReadCapacityUnits
 		}
@@ -247,7 +247,8 @@ func (d *DynamoDBClient) describeTable(ctx context.Context, tableName string) (T
 				KeyType:       string(ks.KeyType),
 			})
 		}
-		if gsi.ProvisionedThroughput != nil {
+		// Only include capacity units for PROVISIONED billing mode
+		if summary.BillingMode == "PROVISIONED" && gsi.ProvisionedThroughput != nil {
 			if gsi.ProvisionedThroughput.ReadCapacityUnits != nil {
 				g.ReadCapacityUnits = *gsi.ProvisionedThroughput.ReadCapacityUnits
 			}
