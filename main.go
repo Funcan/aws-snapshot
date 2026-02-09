@@ -53,6 +53,12 @@ var snapshotRDSCmd = &cobra.Command{
 	RunE:  runSnapshotRDS,
 }
 
+var snapshotOpenSearchCmd = &cobra.Command{
+	Use:   "opensearch",
+	Short: "Snapshot OpenSearch domains",
+	RunE:  runSnapshotOpenSearch,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -69,6 +75,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotS3Cmd)
 	snapshotCmd.AddCommand(snapshotEKSCmd)
 	snapshotCmd.AddCommand(snapshotRDSCmd)
+	snapshotCmd.AddCommand(snapshotOpenSearchCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -91,9 +98,10 @@ func statusf(format string, args ...any) {
 
 // Snapshot represents the top-level output structure.
 type Snapshot struct {
-	S3  []awsclient.BucketSummary  `json:"S3,omitempty"`
-	EKS []awsclient.ClusterSummary `json:"EKS,omitempty"`
-	RDS *awsclient.RDSSummary      `json:"RDS,omitempty"`
+	S3         []awsclient.BucketSummary  `json:"S3,omitempty"`
+	EKS        []awsclient.ClusterSummary `json:"EKS,omitempty"`
+	RDS        *awsclient.RDSSummary      `json:"RDS,omitempty"`
+	OpenSearch []awsclient.DomainSummary  `json:"OpenSearch,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -207,6 +215,39 @@ func runSnapshotRDS(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotOpenSearch(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var osOpts []awsclient.OpenSearchOption
+	if verbose {
+		osOpts = append(osOpts, awsclient.WithOpenSearchStatusFunc(statusf))
+	}
+	osClient := client.OpenSearchClient(osOpts...)
+
+	statusf("Fetching OpenSearch domains...")
+	domains, err := osClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing OpenSearch domains: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(domains, func(i, j int) bool {
+		return domains[i].DomainName < domains[j].DomainName
+	})
+
+	if err := outputSnapshot(Snapshot{OpenSearch: domains}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -277,6 +318,24 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return rdsSummary.Clusters[i].Identifier < rdsSummary.Clusters[j].Identifier
 	})
 	snap.RDS = rdsSummary
+
+	// Fetch OpenSearch domains
+	var osOpts []awsclient.OpenSearchOption
+	if verbose {
+		osOpts = append(osOpts, awsclient.WithOpenSearchStatusFunc(statusf))
+	}
+	osClient := client.OpenSearchClient(osOpts...)
+
+	statusf("Fetching OpenSearch domains...")
+	domains, err := osClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing OpenSearch domains: %w", err)
+	}
+
+	sort.Slice(domains, func(i, j int) bool {
+		return domains[i].DomainName < domains[j].DomainName
+	})
+	snap.OpenSearch = domains
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
