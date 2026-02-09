@@ -207,8 +207,7 @@ func (r *RDSClient) listClusters(ctx context.Context) ([]DBClusterSummary, error
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			// If no clusters exist or Aurora not available, return empty
-			return clusters, nil
+			return nil, err
 		}
 		for _, cluster := range page.DBClusters {
 			summary := DBClusterSummary{

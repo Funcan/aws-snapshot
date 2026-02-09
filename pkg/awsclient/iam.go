@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -209,6 +210,8 @@ func (i *IAMClient) listUsers(ctx context.Context) ([]UserSummary, error) {
 
 	summaries := make([]UserSummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	workCh := make(chan int, total)
 	for idx := range users {
@@ -229,7 +232,16 @@ func (i *IAMClient) listUsers(ctx context.Context) ([]UserSummary, error) {
 				}
 
 				user := users[idx]
-				summaries[idx] = i.describeUser(ctx, user)
+				summary, err := i.describeUser(ctx, user)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				i.status("[%d/%d] Processed user: %s", n, total, user.name)
@@ -238,6 +250,10 @@ func (i *IAMClient) listUsers(ctx context.Context) ([]UserSummary, error) {
 	}
 
 	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
 	return summaries, nil
 }
 
@@ -247,7 +263,7 @@ type userInfo struct {
 	path string
 }
 
-func (i *IAMClient) describeUser(ctx context.Context, user userInfo) UserSummary {
+func (i *IAMClient) describeUser(ctx context.Context, user userInfo) (UserSummary, error) {
 	summary := UserSummary{
 		Name: user.name,
 		Arn:  user.arn,
@@ -258,39 +274,45 @@ func (i *IAMClient) describeUser(ctx context.Context, user userInfo) UserSummary
 	groupsResp, err := i.client.ListGroupsForUser(ctx, &iam.ListGroupsForUserInput{
 		UserName: &user.name,
 	})
-	if err == nil {
-		for _, g := range groupsResp.Groups {
-			summary.Groups = append(summary.Groups, aws.ToString(g.GroupName))
-		}
+	if err != nil {
+		return UserSummary{}, fmt.Errorf("list groups for user %s: %w", user.name, err)
+	}
+	for _, g := range groupsResp.Groups {
+		summary.Groups = append(summary.Groups, aws.ToString(g.GroupName))
 	}
 
 	// Get attached policies
 	attachedResp, err := i.client.ListAttachedUserPolicies(ctx, &iam.ListAttachedUserPoliciesInput{
 		UserName: &user.name,
 	})
-	if err == nil {
-		for _, p := range attachedResp.AttachedPolicies {
-			summary.AttachedPolicies = append(summary.AttachedPolicies, aws.ToString(p.PolicyName))
-		}
+	if err != nil {
+		return UserSummary{}, fmt.Errorf("list attached policies for user %s: %w", user.name, err)
+	}
+	for _, p := range attachedResp.AttachedPolicies {
+		summary.AttachedPolicies = append(summary.AttachedPolicies, aws.ToString(p.PolicyName))
 	}
 
 	// Get inline policies
 	inlineResp, err := i.client.ListUserPolicies(ctx, &iam.ListUserPoliciesInput{
 		UserName: &user.name,
 	})
-	if err == nil {
-		summary.InlinePolicies = inlineResp.PolicyNames
+	if err != nil {
+		return UserSummary{}, fmt.Errorf("list inline policies for user %s: %w", user.name, err)
 	}
+	summary.InlinePolicies = inlineResp.PolicyNames
 
 	// Check MFA devices
 	mfaResp, err := i.client.ListMFADevices(ctx, &iam.ListMFADevicesInput{
 		UserName: &user.name,
 	})
-	if err == nil && len(mfaResp.MFADevices) > 0 {
+	if err != nil {
+		return UserSummary{}, fmt.Errorf("list MFA devices for user %s: %w", user.name, err)
+	}
+	if len(mfaResp.MFADevices) > 0 {
 		summary.MFAEnabled = true
 	}
 
-	// Check login profile (password)
+	// Check login profile (password) - NoSuchEntity is expected for users without console access
 	_, err = i.client.GetLoginProfile(ctx, &iam.GetLoginProfileInput{
 		UserName: &user.name,
 	})
@@ -302,11 +324,12 @@ func (i *IAMClient) describeUser(ctx context.Context, user userInfo) UserSummary
 	keysResp, err := i.client.ListAccessKeys(ctx, &iam.ListAccessKeysInput{
 		UserName: &user.name,
 	})
-	if err == nil {
-		summary.AccessKeyCount = len(keysResp.AccessKeyMetadata)
+	if err != nil {
+		return UserSummary{}, fmt.Errorf("list access keys for user %s: %w", user.name, err)
 	}
+	summary.AccessKeyCount = len(keysResp.AccessKeyMetadata)
 
-	return summary
+	return summary, nil
 }
 
 func (i *IAMClient) listGroups(ctx context.Context) ([]GroupSummary, error) {
@@ -345,6 +368,8 @@ func (i *IAMClient) listGroups(ctx context.Context) ([]GroupSummary, error) {
 
 	summaries := make([]GroupSummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	workCh := make(chan int, total)
 	for idx := range groups {
@@ -365,7 +390,16 @@ func (i *IAMClient) listGroups(ctx context.Context) ([]GroupSummary, error) {
 				}
 
 				group := groups[idx]
-				summaries[idx] = i.describeGroup(ctx, group)
+				summary, err := i.describeGroup(ctx, group)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				i.status("[%d/%d] Processed group: %s", n, total, group.name)
@@ -374,6 +408,10 @@ func (i *IAMClient) listGroups(ctx context.Context) ([]GroupSummary, error) {
 	}
 
 	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
 	return summaries, nil
 }
 
@@ -383,7 +421,7 @@ type groupInfo struct {
 	path string
 }
 
-func (i *IAMClient) describeGroup(ctx context.Context, group groupInfo) GroupSummary {
+func (i *IAMClient) describeGroup(ctx context.Context, group groupInfo) (GroupSummary, error) {
 	summary := GroupSummary{
 		Name: group.name,
 		Arn:  group.arn,
@@ -394,21 +432,23 @@ func (i *IAMClient) describeGroup(ctx context.Context, group groupInfo) GroupSum
 	attachedResp, err := i.client.ListAttachedGroupPolicies(ctx, &iam.ListAttachedGroupPoliciesInput{
 		GroupName: &group.name,
 	})
-	if err == nil {
-		for _, p := range attachedResp.AttachedPolicies {
-			summary.AttachedPolicies = append(summary.AttachedPolicies, aws.ToString(p.PolicyName))
-		}
+	if err != nil {
+		return GroupSummary{}, fmt.Errorf("list attached policies for group %s: %w", group.name, err)
+	}
+	for _, p := range attachedResp.AttachedPolicies {
+		summary.AttachedPolicies = append(summary.AttachedPolicies, aws.ToString(p.PolicyName))
 	}
 
 	// Get inline policies
 	inlineResp, err := i.client.ListGroupPolicies(ctx, &iam.ListGroupPoliciesInput{
 		GroupName: &group.name,
 	})
-	if err == nil {
-		summary.InlinePolicies = inlineResp.PolicyNames
+	if err != nil {
+		return GroupSummary{}, fmt.Errorf("list inline policies for group %s: %w", group.name, err)
 	}
+	summary.InlinePolicies = inlineResp.PolicyNames
 
-	return summary
+	return summary, nil
 }
 
 func (i *IAMClient) listRoles(ctx context.Context) ([]RoleSummary, error) {
@@ -450,6 +490,8 @@ func (i *IAMClient) listRoles(ctx context.Context) ([]RoleSummary, error) {
 
 	summaries := make([]RoleSummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	workCh := make(chan int, total)
 	for idx := range roles {
@@ -470,7 +512,16 @@ func (i *IAMClient) listRoles(ctx context.Context) ([]RoleSummary, error) {
 				}
 
 				role := roles[idx]
-				summaries[idx] = i.describeRole(ctx, role)
+				summary, err := i.describeRole(ctx, role)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				i.status("[%d/%d] Processed role: %s", n, total, role.name)
@@ -479,6 +530,10 @@ func (i *IAMClient) listRoles(ctx context.Context) ([]RoleSummary, error) {
 	}
 
 	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
 	return summaries, nil
 }
 
@@ -491,7 +546,7 @@ type roleInfo struct {
 	hasAssumeRolePolicy bool
 }
 
-func (i *IAMClient) describeRole(ctx context.Context, role roleInfo) RoleSummary {
+func (i *IAMClient) describeRole(ctx context.Context, role roleInfo) (RoleSummary, error) {
 	summary := RoleSummary{
 		Name:                     role.name,
 		Arn:                      role.arn,
@@ -505,21 +560,23 @@ func (i *IAMClient) describeRole(ctx context.Context, role roleInfo) RoleSummary
 	attachedResp, err := i.client.ListAttachedRolePolicies(ctx, &iam.ListAttachedRolePoliciesInput{
 		RoleName: &role.name,
 	})
-	if err == nil {
-		for _, p := range attachedResp.AttachedPolicies {
-			summary.AttachedPolicies = append(summary.AttachedPolicies, aws.ToString(p.PolicyName))
-		}
+	if err != nil {
+		return RoleSummary{}, fmt.Errorf("list attached policies for role %s: %w", role.name, err)
+	}
+	for _, p := range attachedResp.AttachedPolicies {
+		summary.AttachedPolicies = append(summary.AttachedPolicies, aws.ToString(p.PolicyName))
 	}
 
 	// Get inline policies
 	inlineResp, err := i.client.ListRolePolicies(ctx, &iam.ListRolePoliciesInput{
 		RoleName: &role.name,
 	})
-	if err == nil {
-		summary.InlinePolicies = inlineResp.PolicyNames
+	if err != nil {
+		return RoleSummary{}, fmt.Errorf("list inline policies for role %s: %w", role.name, err)
 	}
+	summary.InlinePolicies = inlineResp.PolicyNames
 
-	return summary
+	return summary, nil
 }
 
 func (i *IAMClient) listPolicies(ctx context.Context) ([]PolicySummary, error) {

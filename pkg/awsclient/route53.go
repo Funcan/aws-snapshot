@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -128,6 +129,9 @@ func (r *Route53Client) Summarise(ctx context.Context) ([]HostedZoneSummary, err
 
 	// Process zones concurrently
 	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+
 	for i := 0; i < r.concurrency && i < total; i++ {
 		wg.Add(1)
 		go func() {
@@ -140,7 +144,16 @@ func (r *Route53Client) Summarise(ctx context.Context) ([]HostedZoneSummary, err
 				}
 
 				zone := zones[idx]
-				summaries[idx] = r.describeZone(ctx, zone)
+				summary, err := r.describeZone(ctx, zone)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("describing zone %s: %w", zone.name, err)
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				r.status("[%d/%d] Processed zone: %s", n, total, zone.name)
@@ -150,7 +163,11 @@ func (r *Route53Client) Summarise(ctx context.Context) ([]HostedZoneSummary, err
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	// Filter out unprocessed summaries (context cancellation)
 	result := make([]HostedZoneSummary, 0, total)
 	for _, s := range summaries {
 		if s.Name != "" {
@@ -166,7 +183,7 @@ type zoneInfo struct {
 	name string
 }
 
-func (r *Route53Client) describeZone(ctx context.Context, zone zoneInfo) HostedZoneSummary {
+func (r *Route53Client) describeZone(ctx context.Context, zone zoneInfo) (HostedZoneSummary, error) {
 	summary := HostedZoneSummary{
 		Id:   strings.TrimPrefix(zone.id, "/hostedzone/"),
 		Name: zone.name,
@@ -177,7 +194,7 @@ func (r *Route53Client) describeZone(ctx context.Context, zone zoneInfo) HostedZ
 		Id: &zone.id,
 	})
 	if err != nil {
-		return summary
+		return summary, fmt.Errorf("GetHostedZone: %w", err)
 	}
 
 	if zoneResp.HostedZone != nil {
@@ -194,12 +211,16 @@ func (r *Route53Client) describeZone(ctx context.Context, zone zoneInfo) HostedZ
 	}
 
 	// Get record sets
-	summary.RecordSets = r.listRecordSets(ctx, zone.id)
+	recordSets, err := r.listRecordSets(ctx, zone.id)
+	if err != nil {
+		return summary, err
+	}
+	summary.RecordSets = recordSets
 
-	return summary
+	return summary, nil
 }
 
-func (r *Route53Client) listRecordSets(ctx context.Context, zoneId string) []RecordSetSummary {
+func (r *Route53Client) listRecordSets(ctx context.Context, zoneId string) ([]RecordSetSummary, error) {
 	var records []RecordSetSummary
 
 	paginator := route53.NewListResourceRecordSetsPaginator(r.client, &route53.ListResourceRecordSetsInput{
@@ -208,7 +229,7 @@ func (r *Route53Client) listRecordSets(ctx context.Context, zoneId string) []Rec
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			break
+			return nil, fmt.Errorf("ListResourceRecordSets: %w", err)
 		}
 
 		for _, rs := range page.ResourceRecordSets {
@@ -254,5 +275,5 @@ func (r *Route53Client) listRecordSets(ctx context.Context, zoneId string) []Rec
 		}
 	}
 
-	return records
+	return records, nil
 }

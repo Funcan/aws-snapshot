@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -113,6 +114,8 @@ func (m *MSKClient) Summarise(ctx context.Context) ([]MSKClusterSummary, error) 
 
 	summaries := make([]MSKClusterSummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	// Create work channel
 	workCh := make(chan int, total)
@@ -135,7 +138,16 @@ func (m *MSKClient) Summarise(ctx context.Context) ([]MSKClusterSummary, error) 
 				}
 
 				cluster := clusters[idx]
-				summaries[idx] = m.describeCluster(ctx, cluster)
+				summary, err := m.describeCluster(ctx, cluster)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				m.status("[%d/%d] Processed cluster: %s", n, total, cluster.name)
@@ -145,15 +157,11 @@ func (m *MSKClient) Summarise(ctx context.Context) ([]MSKClusterSummary, error) 
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
-	result := make([]MSKClusterSummary, 0, total)
-	for _, s := range summaries {
-		if s.ClusterName != "" {
-			result = append(result, s)
-		}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	return result, nil
+	return summaries, nil
 }
 
 type clusterInfo struct {
@@ -161,7 +169,7 @@ type clusterInfo struct {
 	arn  string
 }
 
-func (m *MSKClient) describeCluster(ctx context.Context, cluster clusterInfo) MSKClusterSummary {
+func (m *MSKClient) describeCluster(ctx context.Context, cluster clusterInfo) (MSKClusterSummary, error) {
 	summary := MSKClusterSummary{
 		ClusterName: cluster.name,
 		ClusterArn:  cluster.arn,
@@ -171,8 +179,11 @@ func (m *MSKClient) describeCluster(ctx context.Context, cluster clusterInfo) MS
 	descResp, err := m.client.DescribeClusterV2(ctx, &kafka.DescribeClusterV2Input{
 		ClusterArn: &cluster.arn,
 	})
-	if err != nil || descResp.ClusterInfo == nil {
-		return summary
+	if err != nil {
+		return MSKClusterSummary{}, fmt.Errorf("describe cluster %s: %w", cluster.name, err)
+	}
+	if descResp.ClusterInfo == nil {
+		return summary, nil
 	}
 
 	info := descResp.ClusterInfo
@@ -238,5 +249,5 @@ func (m *MSKClient) describeCluster(ctx context.Context, cluster clusterInfo) MS
 		}
 	}
 
-	return summary
+	return summary, nil
 }

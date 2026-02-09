@@ -2,6 +2,8 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -157,7 +159,8 @@ func (s *S3Client) listNormalBuckets(ctx context.Context) ([]BucketSummary, erro
 
 	// Process buckets concurrently
 	var wg sync.WaitGroup
-	errCh := make(chan error, 1)
+	var errMu sync.Mutex
+	var firstErr error
 
 	for i := 0; i < s.concurrency && i < total; i++ {
 		wg.Add(1)
@@ -170,7 +173,15 @@ func (s *S3Client) listNormalBuckets(ctx context.Context) ([]BucketSummary, erro
 				default:
 				}
 
-				summary := s.processBucket(ctx, w.bucket, resp.Buckets[w.index].CreationDate)
+				summary, err := s.processBucket(ctx, w.bucket, resp.Buckets[w.index].CreationDate)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("processing bucket %s: %w", w.bucket, err)
+					}
+					errMu.Unlock()
+					continue
+				}
 				summaries[w.index] = summary
 
 				n := processed.Add(1)
@@ -181,16 +192,22 @@ func (s *S3Client) listNormalBuckets(ctx context.Context) ([]BucketSummary, erro
 
 	wg.Wait()
 
-	select {
-	case err := <-errCh:
-		return nil, err
-	default:
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	return summaries, nil
+	// Filter out unprocessed summaries (context cancellation)
+	result := make([]BucketSummary, 0, total)
+	for _, sum := range summaries {
+		if sum.Name != "" {
+			result = append(result, sum)
+		}
+	}
+
+	return result, nil
 }
 
-func (s *S3Client) processBucket(ctx context.Context, bucketName string, creationDate *time.Time) BucketSummary {
+func (s *S3Client) processBucket(ctx context.Context, bucketName string, creationDate *time.Time) (BucketSummary, error) {
 	summary := BucketSummary{
 		Name:         bucketName,
 		CreationDate: creationDate,
@@ -201,30 +218,37 @@ func (s *S3Client) processBucket(ctx context.Context, bucketName string, creatio
 	locResp, err := s.client.GetBucketLocation(ctx, &s3.GetBucketLocationInput{
 		Bucket: &bucketName,
 	})
-	if err == nil {
-		region := string(locResp.LocationConstraint)
-		if region == "" {
-			region = "us-east-1" // Default region returns empty
-		}
-		summary.Region = region
+	if err != nil {
+		return summary, fmt.Errorf("GetBucketLocation: %w", err)
 	}
+	region := string(locResp.LocationConstraint)
+	if region == "" {
+		region = "us-east-1" // Default region returns empty
+	}
+	summary.Region = region
 
 	// Get versioning status
 	verResp, err := s.client.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{
 		Bucket: &bucketName,
 	})
-	if err == nil {
-		summary.VersioningState = string(verResp.Status)
-		if summary.VersioningState == "" {
-			summary.VersioningState = "disabled"
-		}
+	if err != nil {
+		return summary, fmt.Errorf("GetBucketVersioning: %w", err)
+	}
+	summary.VersioningState = string(verResp.Status)
+	if summary.VersioningState == "" {
+		summary.VersioningState = "disabled"
 	}
 
-	// Get lifecycle rules
+	// Get lifecycle rules (NoSuchLifecycleConfiguration is expected if not configured)
 	lcResp, err := s.client.GetBucketLifecycleConfiguration(ctx, &s3.GetBucketLifecycleConfigurationInput{
 		Bucket: &bucketName,
 	})
-	if err == nil && lcResp.Rules != nil {
+	if err != nil {
+		// NoSuchLifecycleConfiguration is expected when no lifecycle is configured
+		if !strings.Contains(err.Error(), "NoSuchLifecycleConfiguration") {
+			return summary, fmt.Errorf("GetBucketLifecycleConfiguration: %w", err)
+		}
+	} else if lcResp.Rules != nil {
 		for _, rule := range lcResp.Rules {
 			lr := LifecycleRule{
 				ID:     aws.ToString(rule.ID),
@@ -243,7 +267,7 @@ func (s *S3Client) processBucket(ctx context.Context, bucketName string, creatio
 		}
 	}
 
-	return summary
+	return summary, nil
 }
 
 func (s *S3Client) listDirectoryBuckets(ctx context.Context) ([]BucketSummary, error) {

@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -114,6 +115,8 @@ func (l *LambdaClient) Summarise(ctx context.Context) ([]FunctionSummary, error)
 
 	summaries := make([]FunctionSummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	// Create work channel
 	workCh := make(chan int, total)
@@ -136,7 +139,16 @@ func (l *LambdaClient) Summarise(ctx context.Context) ([]FunctionSummary, error)
 				}
 
 				name := functions[idx]
-				summaries[idx] = l.describeFunction(ctx, name)
+				summary, err := l.describeFunction(ctx, name)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				l.status("[%d/%d] Processed function: %s", n, total, name)
@@ -146,26 +158,22 @@ func (l *LambdaClient) Summarise(ctx context.Context) ([]FunctionSummary, error)
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
-	result := make([]FunctionSummary, 0, total)
-	for _, s := range summaries {
-		if s.FunctionName != "" {
-			result = append(result, s)
-		}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	return result, nil
+	return summaries, nil
 }
 
-func (l *LambdaClient) describeFunction(ctx context.Context, functionName string) FunctionSummary {
-	summary := FunctionSummary{FunctionName: functionName}
-
+func (l *LambdaClient) describeFunction(ctx context.Context, functionName string) (FunctionSummary, error) {
 	resp, err := l.client.GetFunction(ctx, &lambda.GetFunctionInput{
 		FunctionName: &functionName,
 	})
 	if err != nil {
-		return summary
+		return FunctionSummary{}, fmt.Errorf("get function %s: %w", functionName, err)
 	}
+
+	summary := FunctionSummary{FunctionName: functionName}
 
 	cfg := resp.Configuration
 	summary.FunctionArn = aws.ToString(cfg.FunctionArn)
@@ -217,5 +225,5 @@ func (l *LambdaClient) describeFunction(ctx context.Context, functionName string
 	// Get tags
 	summary.Tags = resp.Tags
 
-	return summary
+	return summary, nil
 }

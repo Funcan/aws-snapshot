@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/opensearch"
@@ -189,7 +190,10 @@ func (o *OpenSearchClient) Summarise(ctx context.Context) ([]DomainSummary, erro
 		tagsResp, err := o.client.ListTags(ctx, &opensearch.ListTagsInput{
 			ARN: aws.String(summaries[i].Arn),
 		})
-		if err == nil && len(tagsResp.TagList) > 0 {
+		if err != nil {
+			return nil, fmt.Errorf("ListTags for %s: %w", summaries[i].DomainName, err)
+		}
+		if len(tagsResp.TagList) > 0 {
 			summaries[i].Tags = make(map[string]string)
 			for _, tag := range tagsResp.TagList {
 				summaries[i].Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
