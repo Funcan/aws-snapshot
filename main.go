@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"aws-snapshot/pkg/awsclient"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/spf13/cobra"
 )
 
@@ -17,6 +21,7 @@ var (
 	region      string
 	verbose     bool
 	concurrency int
+	outfile     string
 )
 
 func main() {
@@ -160,6 +165,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&region, "region", "", "AWS region to use")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Print progress messages to stderr")
 	rootCmd.PersistentFlags().IntVarP(&concurrency, "concurrency", "c", 50, "Maximum number of resources to process in parallel")
+	rootCmd.PersistentFlags().StringVarP(&outfile, "outfile", "o", "", "Output file path or s3://bucket/key URL (default: stdout)")
 
 	rootCmd.AddCommand(snapshotCmd)
 	snapshotCmd.AddCommand(snapshotS3Cmd)
@@ -225,9 +231,61 @@ type Snapshot struct {
 }
 
 func outputSnapshot(snap Snapshot) error {
-	enc := json.NewEncoder(os.Stdout)
+	// Encode to JSON
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
 	enc.SetIndent("", "  ")
-	return enc.Encode(snap)
+	if err := enc.Encode(snap); err != nil {
+		return err
+	}
+
+	// Default to stdout
+	if outfile == "" {
+		_, err := os.Stdout.Write(buf.Bytes())
+		return err
+	}
+
+	// Check for S3 URL
+	if strings.HasPrefix(outfile, "s3://") {
+		return writeToS3(buf.Bytes())
+	}
+
+	// Write to local file
+	return os.WriteFile(outfile, buf.Bytes(), 0644)
+}
+
+func writeToS3(data []byte) error {
+	ctx := context.Background()
+
+	// Parse s3://bucket/key
+	path := strings.TrimPrefix(outfile, "s3://")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("invalid S3 URL: %s (expected s3://bucket/key)", outfile)
+	}
+	bucket := parts[0]
+	key := parts[1]
+
+	statusf("Uploading to s3://%s/%s...", bucket, key)
+
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	s3Client := s3.NewFromConfig(client.Config())
+	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(bucket),
+		Key:         aws.String(key),
+		Body:        bytes.NewReader(data),
+		ContentType: aws.String("application/json"),
+	})
+	if err != nil {
+		return fmt.Errorf("uploading to S3: %w", err)
+	}
+
+	statusf("Successfully uploaded to s3://%s/%s", bucket, key)
+	return nil
 }
 
 func runSnapshotS3(cmd *cobra.Command, args []string) error {
