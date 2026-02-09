@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -171,6 +172,8 @@ func (a *APIGatewayClient) listRestAPIs(ctx context.Context) ([]RestAPISummary, 
 
 	summaries := make([]RestAPISummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	// Create work channel
 	workCh := make(chan int, total)
@@ -193,7 +196,16 @@ func (a *APIGatewayClient) listRestAPIs(ctx context.Context) ([]RestAPISummary, 
 				}
 
 				api := apis[idx]
-				summaries[idx] = a.describeRestAPI(ctx, api)
+				summary, err := a.describeRestAPI(ctx, api)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				a.status("[%d/%d] Processed REST API: %s", n, total, api.name)
@@ -203,15 +215,11 @@ func (a *APIGatewayClient) listRestAPIs(ctx context.Context) ([]RestAPISummary, 
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
-	result := make([]RestAPISummary, 0, total)
-	for _, s := range summaries {
-		if s.Id != "" {
-			result = append(result, s)
-		}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	return result, nil
+	return summaries, nil
 }
 
 type restAPIInfo struct {
@@ -219,7 +227,7 @@ type restAPIInfo struct {
 	name string
 }
 
-func (a *APIGatewayClient) describeRestAPI(ctx context.Context, api restAPIInfo) RestAPISummary {
+func (a *APIGatewayClient) describeRestAPI(ctx context.Context, api restAPIInfo) (RestAPISummary, error) {
 	summary := RestAPISummary{
 		Id:   api.id,
 		Name: api.name,
@@ -230,7 +238,7 @@ func (a *APIGatewayClient) describeRestAPI(ctx context.Context, api restAPIInfo)
 		RestApiId: &api.id,
 	})
 	if err != nil {
-		return summary
+		return RestAPISummary{}, fmt.Errorf("get REST API %s: %w", api.name, err)
 	}
 
 	summary.Description = aws.ToString(resp.Description)
@@ -248,22 +256,23 @@ func (a *APIGatewayClient) describeRestAPI(ctx context.Context, api restAPIInfo)
 	stagesResp, err := a.v1Client.GetStages(ctx, &apigateway.GetStagesInput{
 		RestApiId: &api.id,
 	})
-	if err == nil {
-		for _, stage := range stagesResp.Item {
-			s := RestAPIStageSummary{
-				StageName:           aws.ToString(stage.StageName),
-				DeploymentId:        aws.ToString(stage.DeploymentId),
-				Description:         aws.ToString(stage.Description),
-				CacheClusterEnabled: stage.CacheClusterEnabled,
-				CacheClusterSize:    string(stage.CacheClusterSize),
-				TracingEnabled:      stage.TracingEnabled,
-				Tags:                stage.Tags,
-			}
-			summary.Stages = append(summary.Stages, s)
+	if err != nil {
+		return RestAPISummary{}, fmt.Errorf("get stages for REST API %s: %w", api.name, err)
+	}
+	for _, stage := range stagesResp.Item {
+		s := RestAPIStageSummary{
+			StageName:           aws.ToString(stage.StageName),
+			DeploymentId:        aws.ToString(stage.DeploymentId),
+			Description:         aws.ToString(stage.Description),
+			CacheClusterEnabled: stage.CacheClusterEnabled,
+			CacheClusterSize:    string(stage.CacheClusterSize),
+			TracingEnabled:      stage.TracingEnabled,
+			Tags:                stage.Tags,
 		}
+		summary.Stages = append(summary.Stages, s)
 	}
 
-	return summary
+	return summary, nil
 }
 
 func (a *APIGatewayClient) listHttpAPIs(ctx context.Context) ([]HttpAPISummary, error) {
@@ -301,6 +310,8 @@ func (a *APIGatewayClient) listHttpAPIs(ctx context.Context) ([]HttpAPISummary, 
 
 	summaries := make([]HttpAPISummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	// Create work channel
 	workCh := make(chan int, total)
@@ -323,7 +334,16 @@ func (a *APIGatewayClient) listHttpAPIs(ctx context.Context) ([]HttpAPISummary, 
 				}
 
 				api := apis[idx]
-				summaries[idx] = a.describeHttpAPI(ctx, api)
+				summary, err := a.describeHttpAPI(ctx, api)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				a.status("[%d/%d] Processed HTTP API: %s", n, total, api.name)
@@ -333,15 +353,11 @@ func (a *APIGatewayClient) listHttpAPIs(ctx context.Context) ([]HttpAPISummary, 
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
-	result := make([]HttpAPISummary, 0, total)
-	for _, s := range summaries {
-		if s.ApiId != "" {
-			result = append(result, s)
-		}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	return result, nil
+	return summaries, nil
 }
 
 type httpAPIInfo struct {
@@ -349,7 +365,7 @@ type httpAPIInfo struct {
 	name string
 }
 
-func (a *APIGatewayClient) describeHttpAPI(ctx context.Context, api httpAPIInfo) HttpAPISummary {
+func (a *APIGatewayClient) describeHttpAPI(ctx context.Context, api httpAPIInfo) (HttpAPISummary, error) {
 	summary := HttpAPISummary{
 		ApiId: api.id,
 		Name:  api.name,
@@ -360,7 +376,7 @@ func (a *APIGatewayClient) describeHttpAPI(ctx context.Context, api httpAPIInfo)
 		ApiId: &api.id,
 	})
 	if err != nil {
-		return summary
+		return HttpAPISummary{}, fmt.Errorf("get HTTP API %s: %w", api.name, err)
 	}
 
 	summary.Description = aws.ToString(resp.Description)
@@ -374,17 +390,18 @@ func (a *APIGatewayClient) describeHttpAPI(ctx context.Context, api httpAPIInfo)
 	stagesResp, err := a.v2Client.GetStages(ctx, &apigatewayv2.GetStagesInput{
 		ApiId: &api.id,
 	})
-	if err == nil {
-		for _, stage := range stagesResp.Items {
-			s := HttpAPIStageSummary{
-				StageName:   aws.ToString(stage.StageName),
-				AutoDeploy:  aws.ToBool(stage.AutoDeploy),
-				Description: aws.ToString(stage.Description),
-				Tags:        stage.Tags,
-			}
-			summary.Stages = append(summary.Stages, s)
+	if err != nil {
+		return HttpAPISummary{}, fmt.Errorf("get stages for HTTP API %s: %w", api.name, err)
+	}
+	for _, stage := range stagesResp.Items {
+		s := HttpAPIStageSummary{
+			StageName:   aws.ToString(stage.StageName),
+			AutoDeploy:  aws.ToBool(stage.AutoDeploy),
+			Description: aws.ToString(stage.Description),
+			Tags:        stage.Tags,
 		}
+		summary.Stages = append(summary.Stages, s)
 	}
 
-	return summary
+	return summary, nil
 }

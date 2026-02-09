@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -151,6 +152,8 @@ func (cf *CloudFrontClient) Summarise(ctx context.Context) ([]DistributionSummar
 
 	summaries := make([]DistributionSummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	// Create work channel
 	workCh := make(chan int, total)
@@ -173,7 +176,16 @@ func (cf *CloudFrontClient) Summarise(ctx context.Context) ([]DistributionSummar
 				}
 
 				dist := distributions[idx]
-				summaries[idx] = cf.describeDistribution(ctx, dist)
+				summary, err := cf.describeDistribution(ctx, dist)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				cf.status("[%d/%d] Processed distribution: %s", n, total, dist.id)
@@ -183,15 +195,11 @@ func (cf *CloudFrontClient) Summarise(ctx context.Context) ([]DistributionSummar
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
-	result := make([]DistributionSummary, 0, total)
-	for _, s := range summaries {
-		if s.Id != "" {
-			result = append(result, s)
-		}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	return result, nil
+	return summaries, nil
 }
 
 type distInfo struct {
@@ -199,7 +207,7 @@ type distInfo struct {
 	arn string
 }
 
-func (cf *CloudFrontClient) describeDistribution(ctx context.Context, dist distInfo) DistributionSummary {
+func (cf *CloudFrontClient) describeDistribution(ctx context.Context, dist distInfo) (DistributionSummary, error) {
 	summary := DistributionSummary{
 		Id:  dist.id,
 		ARN: dist.arn,
@@ -209,8 +217,11 @@ func (cf *CloudFrontClient) describeDistribution(ctx context.Context, dist distI
 	resp, err := cf.client.GetDistribution(ctx, &cloudfront.GetDistributionInput{
 		Id: &dist.id,
 	})
-	if err != nil || resp.Distribution == nil {
-		return summary
+	if err != nil {
+		return DistributionSummary{}, fmt.Errorf("get distribution %s: %w", dist.id, err)
+	}
+	if resp.Distribution == nil {
+		return summary, nil
 	}
 
 	d := resp.Distribution
@@ -324,12 +335,15 @@ func (cf *CloudFrontClient) describeDistribution(ctx context.Context, dist distI
 	tagsResp, err := cf.client.ListTagsForResource(ctx, &cloudfront.ListTagsForResourceInput{
 		Resource: &dist.arn,
 	})
-	if err == nil && tagsResp.Tags != nil && len(tagsResp.Tags.Items) > 0 {
+	if err != nil {
+		return DistributionSummary{}, fmt.Errorf("list tags for distribution %s: %w", dist.id, err)
+	}
+	if tagsResp.Tags != nil && len(tagsResp.Tags.Items) > 0 {
 		summary.Tags = make(map[string]string)
 		for _, tag := range tagsResp.Tags.Items {
 			summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
 		}
 	}
 
-	return summary
+	return summary, nil
 }
