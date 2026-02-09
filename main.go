@@ -125,6 +125,12 @@ var snapshotAPIGatewayCmd = &cobra.Command{
 	RunE:  runSnapshotAPIGateway,
 }
 
+var snapshotSQSCmd = &cobra.Command{
+	Use:   "sqs",
+	Short: "Snapshot SQS queues",
+	RunE:  runSnapshotSQS,
+}
+
 var snapshotAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Snapshot all supported resources",
@@ -153,6 +159,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotVPCCmd)
 	snapshotCmd.AddCommand(snapshotCloudFrontCmd)
 	snapshotCmd.AddCommand(snapshotAPIGatewayCmd)
+	snapshotCmd.AddCommand(snapshotSQSCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 }
 
@@ -190,6 +197,7 @@ type Snapshot struct {
 	VPC         []awsclient.VPCSummary          `json:"VPC,omitempty"`
 	CloudFront  []awsclient.DistributionSummary `json:"CloudFront,omitempty"`
 	APIGateway  *awsclient.APIGatewaySummary    `json:"APIGateway,omitempty"`
+	SQS         []awsclient.QueueSummary        `json:"SQS,omitempty"`
 }
 
 func outputSnapshot(snap Snapshot) error {
@@ -745,6 +753,40 @@ func runSnapshotAPIGateway(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSnapshotSQS(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	statusf("Creating AWS client...")
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var sqsOpts []awsclient.SQSOption
+	if verbose {
+		sqsOpts = append(sqsOpts, awsclient.WithSQSStatusFunc(statusf))
+	}
+	sqsOpts = append(sqsOpts, awsclient.WithSQSConcurrency(concurrency))
+	sqsClient := client.SQSClient(sqsOpts...)
+
+	statusf("Fetching SQS queues...")
+	queues, err := sqsClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing SQS queues: %w", err)
+	}
+
+	// Sort for consistent diffs
+	sort.Slice(queues, func(i, j int) bool {
+		return queues[i].Name < queues[j].Name
+	})
+
+	if err := outputSnapshot(Snapshot{SQS: queues}); err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+
+	return nil
+}
+
 func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
@@ -1074,6 +1116,25 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return apigwSummary.HttpAPIs[i].Name < apigwSummary.HttpAPIs[j].Name
 	})
 	snap.APIGateway = apigwSummary
+
+	// Fetch SQS queues
+	var sqsOpts []awsclient.SQSOption
+	if verbose {
+		sqsOpts = append(sqsOpts, awsclient.WithSQSStatusFunc(statusf))
+	}
+	sqsOpts = append(sqsOpts, awsclient.WithSQSConcurrency(concurrency))
+	sqsClient := client.SQSClient(sqsOpts...)
+
+	statusf("Fetching SQS queues...")
+	queues, err := sqsClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing SQS queues: %w", err)
+	}
+
+	sort.Slice(queues, func(i, j int) bool {
+		return queues[i].Name < queues[j].Name
+	})
+	snap.SQS = queues
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
