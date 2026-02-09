@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -132,6 +133,8 @@ func (e *ELBClient) Summarise(ctx context.Context) (*ELBSummary, error) {
 
 	loadBalancers := make([]LoadBalancerSummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	if total > 0 {
 		// Create work channel
@@ -155,7 +158,16 @@ func (e *ELBClient) Summarise(ctx context.Context) (*ELBSummary, error) {
 					}
 
 					lb := lbs[idx]
-					loadBalancers[idx] = e.describeLoadBalancer(ctx, lb)
+					summary, err := e.describeLoadBalancer(ctx, lb)
+					if err != nil {
+						errMu.Lock()
+						if firstErr == nil {
+							firstErr = err
+						}
+						errMu.Unlock()
+						continue
+					}
+					loadBalancers[idx] = summary
 
 					n := processed.Add(1)
 					e.status("[%d/%d] Processed load balancer: %s", n, total, lb.name)
@@ -164,13 +176,9 @@ func (e *ELBClient) Summarise(ctx context.Context) (*ELBSummary, error) {
 		}
 
 		wg.Wait()
-	}
 
-	// Filter out empty summaries (errors)
-	resultLBs := make([]LoadBalancerSummary, 0, total)
-	for _, lb := range loadBalancers {
-		if lb.LoadBalancerName != "" {
-			resultLBs = append(resultLBs, lb)
+		if firstErr != nil {
+			return nil, firstErr
 		}
 	}
 
@@ -182,7 +190,7 @@ func (e *ELBClient) Summarise(ctx context.Context) (*ELBSummary, error) {
 	}
 
 	return &ELBSummary{
-		LoadBalancers: resultLBs,
+		LoadBalancers: loadBalancers,
 		TargetGroups:  targetGroups,
 	}, nil
 }
@@ -192,7 +200,7 @@ type lbInfo struct {
 	arn  string
 }
 
-func (e *ELBClient) describeLoadBalancer(ctx context.Context, lb lbInfo) LoadBalancerSummary {
+func (e *ELBClient) describeLoadBalancer(ctx context.Context, lb lbInfo) (LoadBalancerSummary, error) {
 	summary := LoadBalancerSummary{
 		LoadBalancerName: lb.name,
 		LoadBalancerArn:  lb.arn,
@@ -202,8 +210,11 @@ func (e *ELBClient) describeLoadBalancer(ctx context.Context, lb lbInfo) LoadBal
 	descResp, err := e.v2Client.DescribeLoadBalancers(ctx, &elbv2.DescribeLoadBalancersInput{
 		LoadBalancerArns: []string{lb.arn},
 	})
-	if err != nil || len(descResp.LoadBalancers) == 0 {
-		return summary
+	if err != nil {
+		return LoadBalancerSummary{}, fmt.Errorf("describe load balancer %s: %w", lb.name, err)
+	}
+	if len(descResp.LoadBalancers) == 0 {
+		return summary, nil
 	}
 
 	lbDetail := descResp.LoadBalancers[0]
@@ -225,33 +236,37 @@ func (e *ELBClient) describeLoadBalancer(ctx context.Context, lb lbInfo) LoadBal
 	listenersResp, err := e.v2Client.DescribeListeners(ctx, &elbv2.DescribeListenersInput{
 		LoadBalancerArn: &lb.arn,
 	})
-	if err == nil {
-		for _, listener := range listenersResp.Listeners {
-			ls := ListenerSummary{
-				ListenerArn: aws.ToString(listener.ListenerArn),
-				Port:        aws.ToInt32(listener.Port),
-				Protocol:    string(listener.Protocol),
-				SslPolicy:   aws.ToString(listener.SslPolicy),
-			}
-			for _, cert := range listener.Certificates {
-				ls.CertificateArns = append(ls.CertificateArns, aws.ToString(cert.CertificateArn))
-			}
-			summary.Listeners = append(summary.Listeners, ls)
+	if err != nil {
+		return LoadBalancerSummary{}, fmt.Errorf("describe listeners for %s: %w", lb.name, err)
+	}
+	for _, listener := range listenersResp.Listeners {
+		ls := ListenerSummary{
+			ListenerArn: aws.ToString(listener.ListenerArn),
+			Port:        aws.ToInt32(listener.Port),
+			Protocol:    string(listener.Protocol),
+			SslPolicy:   aws.ToString(listener.SslPolicy),
 		}
+		for _, cert := range listener.Certificates {
+			ls.CertificateArns = append(ls.CertificateArns, aws.ToString(cert.CertificateArn))
+		}
+		summary.Listeners = append(summary.Listeners, ls)
 	}
 
 	// Get tags
 	tagsResp, err := e.v2Client.DescribeTags(ctx, &elbv2.DescribeTagsInput{
 		ResourceArns: []string{lb.arn},
 	})
-	if err == nil && len(tagsResp.TagDescriptions) > 0 {
+	if err != nil {
+		return LoadBalancerSummary{}, fmt.Errorf("describe tags for %s: %w", lb.name, err)
+	}
+	if len(tagsResp.TagDescriptions) > 0 {
 		summary.Tags = make(map[string]string)
 		for _, tag := range tagsResp.TagDescriptions[0].Tags {
 			summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
 		}
 	}
 
-	return summary
+	return summary, nil
 }
 
 func (e *ELBClient) listTargetGroups(ctx context.Context) ([]TargetGroupSummary, error) {

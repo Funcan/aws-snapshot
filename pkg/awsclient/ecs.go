@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -119,6 +120,8 @@ func (e *ECSClient) Summarise(ctx context.Context) (*ECSSummary, error) {
 
 	clusters := make([]ECSClusterSummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	// Create work channel
 	workCh := make(chan int, total)
@@ -141,40 +144,47 @@ func (e *ECSClient) Summarise(ctx context.Context) (*ECSSummary, error) {
 				}
 
 				arn := clusterArns[idx]
-				clusters[idx] = e.describeCluster(ctx, arn)
+				summary, err := e.describeCluster(ctx, arn)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					continue
+				}
+				clusters[idx] = summary
 
 				n := processed.Add(1)
-				e.status("[%d/%d] Processed cluster: %s", n, total, clusters[idx].ClusterName)
+				e.status("[%d/%d] Processed cluster: %s", n, total, summary.ClusterName)
 			}
 		}()
 	}
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
-	result := make([]ECSClusterSummary, 0, total)
-	for _, c := range clusters {
-		if c.ClusterName != "" {
-			result = append(result, c)
-		}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	return &ECSSummary{Clusters: result}, nil
+	return &ECSSummary{Clusters: clusters}, nil
 }
 
-func (e *ECSClient) describeCluster(ctx context.Context, clusterArn string) ECSClusterSummary {
-	summary := ECSClusterSummary{}
-
+func (e *ECSClient) describeCluster(ctx context.Context, clusterArn string) (ECSClusterSummary, error) {
 	// Describe the cluster
 	descResp, err := e.client.DescribeClusters(ctx, &ecs.DescribeClustersInput{
 		Clusters: []string{clusterArn},
 		Include:  []types.ClusterField{types.ClusterFieldSettings, types.ClusterFieldConfigurations},
 	})
-	if err != nil || len(descResp.Clusters) == 0 {
-		return summary
+	if err != nil {
+		return ECSClusterSummary{}, fmt.Errorf("describe cluster %s: %w", clusterArn, err)
+	}
+	if len(descResp.Clusters) == 0 {
+		return ECSClusterSummary{}, nil
 	}
 
 	cluster := descResp.Clusters[0]
+	summary := ECSClusterSummary{}
 	summary.ClusterName = aws.ToString(cluster.ClusterName)
 	summary.ClusterArn = aws.ToString(cluster.ClusterArn)
 	summary.Status = aws.ToString(cluster.Status)
@@ -195,12 +205,16 @@ func (e *ECSClient) describeCluster(ctx context.Context, clusterArn string) ECSC
 	}
 
 	// Get services for this cluster
-	summary.Services = e.listServices(ctx, clusterArn)
+	services, err := e.listServices(ctx, clusterArn)
+	if err != nil {
+		return ECSClusterSummary{}, err
+	}
+	summary.Services = services
 
-	return summary
+	return summary, nil
 }
 
-func (e *ECSClient) listServices(ctx context.Context, clusterArn string) []ServiceSummary {
+func (e *ECSClient) listServices(ctx context.Context, clusterArn string) ([]ServiceSummary, error) {
 	var serviceArns []string
 	paginator := ecs.NewListServicesPaginator(e.client, &ecs.ListServicesInput{
 		Cluster: &clusterArn,
@@ -208,13 +222,13 @@ func (e *ECSClient) listServices(ctx context.Context, clusterArn string) []Servi
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			break
+			return nil, fmt.Errorf("list services for cluster %s: %w", clusterArn, err)
 		}
 		serviceArns = append(serviceArns, page.ServiceArns...)
 	}
 
 	if len(serviceArns) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Describe services in batches of 10 (AWS limit)
@@ -231,7 +245,7 @@ func (e *ECSClient) listServices(ctx context.Context, clusterArn string) []Servi
 			Services: batch,
 		})
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("describe services for cluster %s: %w", clusterArn, err)
 		}
 
 		for _, svc := range descResp.Services {
@@ -265,5 +279,5 @@ func (e *ECSClient) listServices(ctx context.Context, clusterArn string) []Servi
 		}
 	}
 
-	return services
+	return services, nil
 }

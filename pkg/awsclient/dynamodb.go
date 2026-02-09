@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -135,6 +136,8 @@ func (d *DynamoDBClient) Summarise(ctx context.Context) ([]TableSummary, error) 
 
 	summaries := make([]TableSummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	// Create work channel
 	workCh := make(chan int, total)
@@ -157,7 +160,16 @@ func (d *DynamoDBClient) Summarise(ctx context.Context) ([]TableSummary, error) 
 				}
 
 				name := tableNames[idx]
-				summaries[idx] = d.describeTable(ctx, name)
+				summary, err := d.describeTable(ctx, name)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				d.status("[%d/%d] Processed table: %s", n, total, name)
@@ -167,28 +179,23 @@ func (d *DynamoDBClient) Summarise(ctx context.Context) ([]TableSummary, error) 
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
-	result := make([]TableSummary, 0, total)
-	for _, s := range summaries {
-		if s.TableName != "" {
-			result = append(result, s)
-		}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	return result, nil
+	return summaries, nil
 }
 
-func (d *DynamoDBClient) describeTable(ctx context.Context, tableName string) TableSummary {
-	summary := TableSummary{TableName: tableName}
-
+func (d *DynamoDBClient) describeTable(ctx context.Context, tableName string) (TableSummary, error) {
 	// Describe table
 	resp, err := d.client.DescribeTable(ctx, &dynamodb.DescribeTableInput{
 		TableName: &tableName,
 	})
 	if err != nil {
-		return summary
+		return TableSummary{}, fmt.Errorf("describe table %s: %w", tableName, err)
 	}
 
+	summary := TableSummary{TableName: tableName}
 	table := resp.Table
 	summary.TableArn = aws.ToString(table.TableArn)
 	summary.TableStatus = string(table.TableStatus)
@@ -288,7 +295,10 @@ func (d *DynamoDBClient) describeTable(ctx context.Context, tableName string) Ta
 	ttlResp, err := d.client.DescribeTimeToLive(ctx, &dynamodb.DescribeTimeToLiveInput{
 		TableName: &tableName,
 	})
-	if err == nil && ttlResp.TimeToLiveDescription != nil {
+	if err != nil {
+		return TableSummary{}, fmt.Errorf("describe TTL for table %s: %w", tableName, err)
+	}
+	if ttlResp.TimeToLiveDescription != nil {
 		summary.TTLEnabled = ttlResp.TimeToLiveDescription.TimeToLiveStatus == types.TimeToLiveStatusEnabled
 		if summary.TTLEnabled {
 			summary.TTLAttributeName = aws.ToString(ttlResp.TimeToLiveDescription.AttributeName)
@@ -299,7 +309,10 @@ func (d *DynamoDBClient) describeTable(ctx context.Context, tableName string) Ta
 	pitrResp, err := d.client.DescribeContinuousBackups(ctx, &dynamodb.DescribeContinuousBackupsInput{
 		TableName: &tableName,
 	})
-	if err == nil && pitrResp.ContinuousBackupsDescription != nil {
+	if err != nil {
+		return TableSummary{}, fmt.Errorf("describe continuous backups for table %s: %w", tableName, err)
+	}
+	if pitrResp.ContinuousBackupsDescription != nil {
 		if pitrResp.ContinuousBackupsDescription.PointInTimeRecoveryDescription != nil {
 			summary.PointInTimeRecovery = pitrResp.ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus == types.PointInTimeRecoveryStatusEnabled
 		}
@@ -309,12 +322,15 @@ func (d *DynamoDBClient) describeTable(ctx context.Context, tableName string) Ta
 	tagsResp, err := d.client.ListTagsOfResource(ctx, &dynamodb.ListTagsOfResourceInput{
 		ResourceArn: table.TableArn,
 	})
-	if err == nil && len(tagsResp.Tags) > 0 {
+	if err != nil {
+		return TableSummary{}, fmt.Errorf("list tags for table %s: %w", tableName, err)
+	}
+	if len(tagsResp.Tags) > 0 {
 		summary.Tags = make(map[string]string)
 		for _, tag := range tagsResp.Tags {
 			summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
 		}
 	}
 
-	return summary
+	return summary, nil
 }

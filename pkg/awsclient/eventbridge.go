@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -130,6 +131,8 @@ func (e *EventBridgeClient) Summarise(ctx context.Context) (*EventBridgeSummary,
 
 	summaries := make([]EventBusSummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	// Create work channel
 	workCh := make(chan int, total)
@@ -152,7 +155,16 @@ func (e *EventBridgeClient) Summarise(ctx context.Context) (*EventBridgeSummary,
 				}
 
 				bus := buses[idx]
-				summaries[idx] = e.describeEventBus(ctx, bus)
+				summary, err := e.describeEventBus(ctx, bus)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				e.status("[%d/%d] Processed event bus: %s", n, total, bus.name)
@@ -162,15 +174,11 @@ func (e *EventBridgeClient) Summarise(ctx context.Context) (*EventBridgeSummary,
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
-	result := make([]EventBusSummary, 0, total)
-	for _, s := range summaries {
-		if s.Name != "" {
-			result = append(result, s)
-		}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	return &EventBridgeSummary{EventBuses: result}, nil
+	return &EventBridgeSummary{EventBuses: summaries}, nil
 }
 
 type eventBusInfo struct {
@@ -178,7 +186,7 @@ type eventBusInfo struct {
 	arn  string
 }
 
-func (e *EventBridgeClient) describeEventBus(ctx context.Context, bus eventBusInfo) EventBusSummary {
+func (e *EventBridgeClient) describeEventBus(ctx context.Context, bus eventBusInfo) (EventBusSummary, error) {
 	summary := EventBusSummary{
 		Name: bus.name,
 		Arn:  bus.arn,
@@ -188,7 +196,10 @@ func (e *EventBridgeClient) describeEventBus(ctx context.Context, bus eventBusIn
 	descResp, err := e.client.DescribeEventBus(ctx, &eventbridge.DescribeEventBusInput{
 		Name: &bus.name,
 	})
-	if err == nil && descResp.Policy != nil && *descResp.Policy != "" {
+	if err != nil {
+		return EventBusSummary{}, fmt.Errorf("describe event bus %s: %w", bus.name, err)
+	}
+	if descResp.Policy != nil && *descResp.Policy != "" {
 		summary.Policy = true
 	}
 
@@ -201,7 +212,7 @@ func (e *EventBridgeClient) describeEventBus(ctx context.Context, bus eventBusIn
 			NextToken:    nextToken,
 		})
 		if err != nil {
-			break
+			return EventBusSummary{}, fmt.Errorf("list rules for event bus %s: %w", bus.name, err)
 		}
 
 		for _, rule := range rulesResp.Rules {
@@ -219,14 +230,15 @@ func (e *EventBridgeClient) describeEventBus(ctx context.Context, bus eventBusIn
 				Rule:         rule.Name,
 				EventBusName: &bus.name,
 			})
-			if err == nil {
-				for _, target := range targetsResp.Targets {
-					r.Targets = append(r.Targets, RuleTargetSummary{
-						Id:      aws.ToString(target.Id),
-						Arn:     aws.ToString(target.Arn),
-						RoleArn: aws.ToString(target.RoleArn),
-					})
-				}
+			if err != nil {
+				return EventBusSummary{}, fmt.Errorf("list targets for rule %s: %w", aws.ToString(rule.Name), err)
+			}
+			for _, target := range targetsResp.Targets {
+				r.Targets = append(r.Targets, RuleTargetSummary{
+					Id:      aws.ToString(target.Id),
+					Arn:     aws.ToString(target.Arn),
+					RoleArn: aws.ToString(target.RoleArn),
+				})
 			}
 
 			rules = append(rules, r)
@@ -244,7 +256,10 @@ func (e *EventBridgeClient) describeEventBus(ctx context.Context, bus eventBusIn
 		tagsResp, err := e.client.ListTagsForResource(ctx, &eventbridge.ListTagsForResourceInput{
 			ResourceARN: &bus.arn,
 		})
-		if err == nil && len(tagsResp.Tags) > 0 {
+		if err != nil {
+			return EventBusSummary{}, fmt.Errorf("list tags for event bus %s: %w", bus.name, err)
+		}
+		if len(tagsResp.Tags) > 0 {
 			summary.Tags = make(map[string]string)
 			for _, tag := range tagsResp.Tags {
 				summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
@@ -252,5 +267,5 @@ func (e *EventBridgeClient) describeEventBus(ctx context.Context, bus eventBusIn
 		}
 	}
 
-	return summary
+	return summary, nil
 }

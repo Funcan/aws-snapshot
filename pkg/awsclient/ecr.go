@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -106,6 +107,8 @@ func (e *ECRClient) Summarise(ctx context.Context) ([]RepositorySummary, error) 
 
 	summaries := make([]RepositorySummary, total)
 	var processed atomic.Int64
+	var errMu sync.Mutex
+	var firstErr error
 
 	// Create work channel
 	workCh := make(chan int, total)
@@ -128,7 +131,16 @@ func (e *ECRClient) Summarise(ctx context.Context) ([]RepositorySummary, error) 
 				}
 
 				repo := repos[idx]
-				summaries[idx] = e.describeRepository(ctx, repo)
+				summary, err := e.describeRepository(ctx, repo)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+					continue
+				}
+				summaries[idx] = summary
 
 				n := processed.Add(1)
 				e.status("[%d/%d] Processed repository: %s", n, total, repo.name)
@@ -138,15 +150,11 @@ func (e *ECRClient) Summarise(ctx context.Context) ([]RepositorySummary, error) 
 
 	wg.Wait()
 
-	// Filter out empty summaries (errors)
-	result := make([]RepositorySummary, 0, total)
-	for _, s := range summaries {
-		if s.RepositoryName != "" {
-			result = append(result, s)
-		}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	return result, nil
+	return summaries, nil
 }
 
 type repoInfo struct {
@@ -155,7 +163,7 @@ type repoInfo struct {
 	uri  string
 }
 
-func (e *ECRClient) describeRepository(ctx context.Context, repo repoInfo) RepositorySummary {
+func (e *ECRClient) describeRepository(ctx context.Context, repo repoInfo) (RepositorySummary, error) {
 	summary := RepositorySummary{
 		RepositoryName: repo.name,
 		RepositoryArn:  repo.arn,
@@ -166,7 +174,10 @@ func (e *ECRClient) describeRepository(ctx context.Context, repo repoInfo) Repos
 	descResp, err := e.client.DescribeRepositories(ctx, &ecr.DescribeRepositoriesInput{
 		RepositoryNames: []string{repo.name},
 	})
-	if err == nil && len(descResp.Repositories) > 0 {
+	if err != nil {
+		return RepositorySummary{}, fmt.Errorf("describe repository %s: %w", repo.name, err)
+	}
+	if len(descResp.Repositories) > 0 {
 		r := descResp.Repositories[0]
 		if r.CreatedAt != nil {
 			summary.CreatedAt = r.CreatedAt.Format("2006-01-02T15:04:05Z")
@@ -181,7 +192,7 @@ func (e *ECRClient) describeRepository(ctx context.Context, repo repoInfo) Repos
 		}
 	}
 
-	// Get lifecycle policy
+	// Get lifecycle policy - LifecyclePolicyNotFoundException is expected for repos without policy
 	lifecycleResp, err := e.client.GetLifecyclePolicy(ctx, &ecr.GetLifecyclePolicyInput{
 		RepositoryName: &repo.name,
 	})
@@ -193,12 +204,15 @@ func (e *ECRClient) describeRepository(ctx context.Context, repo repoInfo) Repos
 	tagsResp, err := e.client.ListTagsForResource(ctx, &ecr.ListTagsForResourceInput{
 		ResourceArn: &repo.arn,
 	})
-	if err == nil && len(tagsResp.Tags) > 0 {
+	if err != nil {
+		return RepositorySummary{}, fmt.Errorf("list tags for repository %s: %w", repo.name, err)
+	}
+	if len(tagsResp.Tags) > 0 {
 		summary.Tags = make(map[string]string)
 		for _, tag := range tagsResp.Tags {
 			summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
 		}
 	}
 
-	return summary
+	return summary, nil
 }
