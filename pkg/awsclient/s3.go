@@ -18,6 +18,7 @@ type StatusFunc func(format string, args ...any)
 
 // S3Client wraps the AWS S3 client with snapshot capabilities.
 type S3Client struct {
+	cfg              aws.Config
 	client           *s3.Client
 	includeNormal    bool
 	includeDirectory bool
@@ -77,6 +78,7 @@ func (c *Client) S3Client(opts ...S3Option) *S3Client {
 	}
 
 	return &S3Client{
+		cfg:              c.cfg,
 		client:           s3.NewFromConfig(c.cfg),
 		includeNormal:    o.includeNormal,
 		includeDirectory: o.includeDirectory,
@@ -227,8 +229,13 @@ func (s *S3Client) processBucket(ctx context.Context, bucketName string, creatio
 	}
 	summary.Region = region
 
+	// Create a region-specific client for this bucket
+	regionCfg := s.cfg.Copy()
+	regionCfg.Region = region
+	regionClient := s3.NewFromConfig(regionCfg)
+
 	// Get versioning status
-	verResp, err := s.client.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{
+	verResp, err := regionClient.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{
 		Bucket: &bucketName,
 	})
 	if err != nil {
@@ -240,7 +247,7 @@ func (s *S3Client) processBucket(ctx context.Context, bucketName string, creatio
 	}
 
 	// Get lifecycle rules (NoSuchLifecycleConfiguration is expected if not configured)
-	lcResp, err := s.client.GetBucketLifecycleConfiguration(ctx, &s3.GetBucketLifecycleConfigurationInput{
+	lcResp, err := regionClient.GetBucketLifecycleConfiguration(ctx, &s3.GetBucketLifecycleConfigurationInput{
 		Bucket: &bucketName,
 	})
 	if err != nil {
