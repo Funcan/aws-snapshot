@@ -44,7 +44,7 @@ func WithEventBridgeConcurrency(n int) EventBridgeOption {
 // EventBridgeClient returns an EventBridgeClient configured with the given options.
 func (c *Client) EventBridgeClient(opts ...EventBridgeOption) *EventBridgeClient {
 	o := &eventbridgeOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

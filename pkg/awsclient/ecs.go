@@ -45,7 +45,7 @@ func WithECSConcurrency(n int) ECSOption {
 // ECSClient returns an ECSClient configured with the given options.
 func (c *Client) ECSClient(opts ...ECSOption) *ECSClient {
 	o := &ecsOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

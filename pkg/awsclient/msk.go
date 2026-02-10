@@ -44,7 +44,7 @@ func WithMSKConcurrency(n int) MSKOption {
 // MSKClient returns an MSKClient configured with the given options.
 func (c *Client) MSKClient(opts ...MSKOption) *MSKClient {
 	o := &mskOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

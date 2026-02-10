@@ -44,7 +44,7 @@ func WithIAMConcurrency(n int) IAMOption {
 // IAMClient returns an IAMClient configured with the given options.
 func (c *Client) IAMClient(opts ...IAMOption) *IAMClient {
 	o := &iamOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

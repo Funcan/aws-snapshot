@@ -44,7 +44,7 @@ func WithLambdaConcurrency(n int) LambdaOption {
 // LambdaClient returns a LambdaClient configured with the given options.
 func (c *Client) LambdaClient(opts ...LambdaOption) *LambdaClient {
 	o := &lambdaOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

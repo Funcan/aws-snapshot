@@ -45,7 +45,7 @@ func WithRoute53Concurrency(n int) Route53Option {
 // Route53Client returns a Route53Client configured with the given options.
 func (c *Client) Route53Client(opts ...Route53Option) *Route53Client {
 	o := &route53Options{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

@@ -44,7 +44,7 @@ func WithELBConcurrency(n int) ELBOption {
 // ELBClient returns an ELBClient configured with the given options.
 func (c *Client) ELBClient(opts ...ELBOption) *ELBClient {
 	o := &elbOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

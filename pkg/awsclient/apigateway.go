@@ -46,7 +46,7 @@ func WithAPIGatewayConcurrency(n int) APIGatewayOption {
 // APIGatewayClient returns an APIGatewayClient configured with the given options.
 func (c *Client) APIGatewayClient(opts ...APIGatewayOption) *APIGatewayClient {
 	o := &apigatewayOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

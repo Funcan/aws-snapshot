@@ -41,7 +41,7 @@ func WithRDSConcurrency(n int) RDSOption {
 // RDSClient returns an RDSClient configured with the given options.
 func (c *Client) RDSClient(opts ...RDSOption) *RDSClient {
 	o := &rdsOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

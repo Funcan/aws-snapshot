@@ -44,7 +44,7 @@ func WithSQSConcurrency(n int) SQSOption {
 // SQSClient returns an SQSClient configured with the given options.
 func (c *Client) SQSClient(opts ...SQSOption) *SQSClient {
 	o := &sqsOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

@@ -44,7 +44,7 @@ func WithSNSConcurrency(n int) SNSOption {
 // SNSClient returns an SNSClient configured with the given options.
 func (c *Client) SNSClient(opts ...SNSOption) *SNSClient {
 	o := &snsOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

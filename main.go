@@ -164,7 +164,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS profile to use")
 	rootCmd.PersistentFlags().StringVar(&region, "region", "", "AWS region to use")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Print progress messages to stderr")
-	rootCmd.PersistentFlags().IntVarP(&concurrency, "concurrency", "c", 50, "Maximum number of resources to process in parallel")
+	rootCmd.PersistentFlags().IntVarP(&concurrency, "concurrency", "c", 10, "Maximum number of resources to process in parallel")
 	rootCmd.PersistentFlags().StringVarP(&outfile, "outfile", "o", "", "Output file path or s3://bucket/key URL (default: stdout)")
 
 	rootCmd.AddCommand(snapshotCmd)

@@ -43,7 +43,7 @@ func WithEKSConcurrency(n int) EKSOption {
 // EKSClient returns an EKSClient configured with the given options.
 func (c *Client) EKSClient(opts ...EKSOption) *EKSClient {
 	o := &eksOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

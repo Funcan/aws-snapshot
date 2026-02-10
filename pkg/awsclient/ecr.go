@@ -44,7 +44,7 @@ func WithECRConcurrency(n int) ECROption {
 // ECRClient returns an ECRClient configured with the given options.
 func (c *Client) ECRClient(opts ...ECROption) *ECRClient {
 	o := &ecrOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

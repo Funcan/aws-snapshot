@@ -45,7 +45,7 @@ func WithDynamoDBConcurrency(n int) DynamoDBOption {
 // DynamoDBClient returns a DynamoDBClient configured with the given options.
 func (c *Client) DynamoDBClient(opts ...DynamoDBOption) *DynamoDBClient {
 	o := &dynamoDBOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)

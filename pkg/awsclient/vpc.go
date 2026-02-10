@@ -45,7 +45,7 @@ func WithVPCConcurrency(n int) VPCOption {
 // VPCClient returns a VPCClient configured with the given options.
 func (c *Client) VPCClient(opts ...VPCOption) *VPCClient {
 	o := &vpcOptions{
-		concurrency: 50,
+		concurrency: 10,
 	}
 	for _, opt := range opts {
 		opt(o)
