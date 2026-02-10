@@ -96,15 +96,21 @@ type ElastiCacheSummary struct {
 func (e *ElastiCacheClient) Summarise(ctx context.Context) (*ElastiCacheSummary, error) {
 	summary := &ElastiCacheSummary{}
 
-	// Fetch cache clusters
+	// Fetch cache clusters first (needed to get engine version for replication groups)
 	clusters, err := e.listCacheClusters(ctx)
 	if err != nil {
 		return nil, err
 	}
 	summary.CacheClusters = clusters
 
+	// Build a map of cluster ID to engine version for quick lookup
+	clusterVersions := make(map[string]string)
+	for _, c := range clusters {
+		clusterVersions[c.CacheClusterId] = c.EngineVersion
+	}
+
 	// Fetch replication groups
-	groups, err := e.listReplicationGroups(ctx)
+	groups, err := e.listReplicationGroups(ctx, clusterVersions)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +167,7 @@ func (e *ElastiCacheClient) listCacheClusters(ctx context.Context) ([]CacheClust
 	return summaries, nil
 }
 
-func (e *ElastiCacheClient) listReplicationGroups(ctx context.Context) ([]ReplicationGroupSummary, error) {
+func (e *ElastiCacheClient) listReplicationGroups(ctx context.Context, clusterVersions map[string]string) ([]ReplicationGroupSummary, error) {
 	e.status("Listing ElastiCache replication groups...")
 
 	var summaries []ReplicationGroupSummary
@@ -186,6 +192,13 @@ func (e *ElastiCacheClient) listReplicationGroups(ctx context.Context) ([]Replic
 				AtRestEncryptionEnabled:  aws.ToBool(group.AtRestEncryptionEnabled),
 				AuthTokenEnabled:         aws.ToBool(group.AuthTokenEnabled),
 				MemberClusters:           group.MemberClusters,
+			}
+
+			// Get engine version from first member cluster
+			if len(group.MemberClusters) > 0 {
+				if version, ok := clusterVersions[group.MemberClusters[0]]; ok {
+					summary.EngineVersion = version
+				}
 			}
 
 			if group.CacheNodeType != nil {

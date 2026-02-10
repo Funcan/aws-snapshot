@@ -184,6 +184,12 @@ var versionMSKCmd = &cobra.Command{
 	RunE:  runVersionMSK,
 }
 
+var versionElastiCacheCmd = &cobra.Command{
+	Use:   "elasticache",
+	Short: "Show ElastiCache cluster and replication group versions",
+	RunE:  runVersionElastiCache,
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS profile to use")
 	rootCmd.PersistentFlags().StringVar(&region, "region", "", "AWS region to use")
@@ -216,6 +222,7 @@ func init() {
 	versionCmd.AddCommand(versionEKSCmd)
 	versionCmd.AddCommand(versionRDSCmd)
 	versionCmd.AddCommand(versionMSKCmd)
+	versionCmd.AddCommand(versionElastiCacheCmd)
 }
 
 func buildClient(ctx context.Context) (*awsclient.Client, error) {
@@ -1625,6 +1632,54 @@ func runVersionMSK(cmd *cobra.Command, args []string) error {
 
 	for _, cluster := range clusters {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", cluster.ClusterName, cluster.KafkaVersion, cluster.InstanceType, cluster.NumberOfBrokerNodes, cluster.State)
+	}
+
+	w.Flush()
+	return nil
+}
+
+func runVersionElastiCache(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var ecOpts []awsclient.ElastiCacheOption
+	if verbose {
+		ecOpts = append(ecOpts, awsclient.WithElastiCacheStatusFunc(statusf))
+	}
+	ecClient := client.ElastiCacheClient(ecOpts...)
+
+	statusf("Fetching ElastiCache resources...")
+	ecSummary, err := ecClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing ElastiCache resources: %w", err)
+	}
+
+	// Sort replication groups and cache clusters
+	sort.Slice(ecSummary.ReplicationGroups, func(i, j int) bool {
+		return ecSummary.ReplicationGroups[i].ReplicationGroupId < ecSummary.ReplicationGroups[j].ReplicationGroupId
+	})
+	sort.Slice(ecSummary.CacheClusters, func(i, j int) bool {
+		return ecSummary.CacheClusters[i].CacheClusterId < ecSummary.CacheClusters[j].CacheClusterId
+	})
+
+	// Print table output
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TYPE\tIDENTIFIER\tENGINE\tVERSION\tNODE TYPE\tSTATUS")
+
+	for _, rg := range ecSummary.ReplicationGroups {
+		fmt.Fprintf(w, "replication-group\t%s\t%s\t%s\t%s\t%s\n", rg.ReplicationGroupId, rg.Engine, rg.EngineVersion, rg.NodeType, rg.Status)
+	}
+
+	// Only show standalone cache clusters (not part of a replication group)
+	for _, cc := range ecSummary.CacheClusters {
+		if cc.ReplicationGroupId != "" {
+			continue
+		}
+		fmt.Fprintf(w, "cache-cluster\t%s\t%s\t%s\t%s\t%s\n", cc.CacheClusterId, cc.Engine, cc.EngineVersion, cc.CacheNodeType, cc.Status)
 	}
 
 	w.Flush()
