@@ -65,24 +65,26 @@ func (m *MSKClient) status(format string, args ...any) {
 
 // MSKClusterSummary represents key attributes of an MSK cluster.
 type MSKClusterSummary struct {
-	ClusterName         string            `json:"cluster_name"`
-	ClusterArn          string            `json:"cluster_arn"`
-	ClusterType         string            `json:"cluster_type"`
-	State               string            `json:"state"`
-	KafkaVersion        string            `json:"kafka_version,omitempty"`
-	NumberOfBrokerNodes int32             `json:"number_of_broker_nodes,omitempty"`
-	InstanceType        string            `json:"instance_type,omitempty"`
-	EBSVolumeSize       int32             `json:"ebs_volume_size_gb,omitempty"`
-	ClientSubnets       []string          `json:"client_subnets,omitempty"`
-	SecurityGroups      []string          `json:"security_groups,omitempty"`
-	EncryptionInTransit string            `json:"encryption_in_transit,omitempty"`
-	EncryptionAtRest    bool              `json:"encryption_at_rest"`
-	EnhancedMonitoring  string            `json:"enhanced_monitoring,omitempty"`
-	OpenMonitoring      bool              `json:"open_monitoring"`
-	LoggingCloudWatch   bool              `json:"logging_cloudwatch"`
-	LoggingFirehose     bool              `json:"logging_firehose"`
-	LoggingS3           bool              `json:"logging_s3"`
-	Tags                map[string]string `json:"tags,omitempty"`
+	ClusterName           string            `json:"cluster_name"`
+	ClusterArn            string            `json:"cluster_arn"`
+	ClusterType           string            `json:"cluster_type"`
+	State                 string            `json:"state"`
+	KafkaVersion          string            `json:"kafka_version,omitempty"`
+	ConfigurationArn      string            `json:"configuration_arn,omitempty"`
+	ConfigurationRevision int64             `json:"configuration_revision,omitempty"`
+	NumberOfBrokerNodes   int32             `json:"number_of_broker_nodes,omitempty"`
+	InstanceType          string            `json:"instance_type,omitempty"`
+	EBSVolumeSize         int32             `json:"ebs_volume_size_gb,omitempty"`
+	ClientSubnets         []string          `json:"client_subnets,omitempty"`
+	SecurityGroups        []string          `json:"security_groups,omitempty"`
+	EncryptionInTransit   string            `json:"encryption_in_transit,omitempty"`
+	EncryptionAtRest      bool              `json:"encryption_at_rest"`
+	EnhancedMonitoring    string            `json:"enhanced_monitoring,omitempty"`
+	OpenMonitoring        bool              `json:"open_monitoring"`
+	LoggingCloudWatch     bool              `json:"logging_cloudwatch"`
+	LoggingFirehose       bool              `json:"logging_firehose"`
+	LoggingS3             bool              `json:"logging_s3"`
+	Tags                  map[string]string `json:"tags,omitempty"`
 }
 
 // Summarise returns a summary of all MSK clusters.
@@ -194,7 +196,11 @@ func (m *MSKClient) describeCluster(ctx context.Context, cluster clusterInfo) (M
 	// Handle provisioned cluster info
 	if info.Provisioned != nil {
 		prov := info.Provisioned
-		summary.KafkaVersion = aws.ToString(prov.CurrentBrokerSoftwareInfo.KafkaVersion)
+		if prov.CurrentBrokerSoftwareInfo != nil {
+			summary.KafkaVersion = aws.ToString(prov.CurrentBrokerSoftwareInfo.KafkaVersion)
+			summary.ConfigurationArn = aws.ToString(prov.CurrentBrokerSoftwareInfo.ConfigurationArn)
+			summary.ConfigurationRevision = aws.ToInt64(prov.CurrentBrokerSoftwareInfo.ConfigurationRevision)
+		}
 		summary.NumberOfBrokerNodes = aws.ToInt32(prov.NumberOfBrokerNodes)
 
 		if prov.BrokerNodeGroupInfo != nil {

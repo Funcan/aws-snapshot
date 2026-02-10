@@ -178,6 +178,12 @@ var versionRDSCmd = &cobra.Command{
 	RunE:  runVersionRDS,
 }
 
+var versionMSKCmd = &cobra.Command{
+	Use:   "msk",
+	Short: "Show MSK cluster Kafka versions",
+	RunE:  runVersionMSK,
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS profile to use")
 	rootCmd.PersistentFlags().StringVar(&region, "region", "", "AWS region to use")
@@ -209,6 +215,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotAllCmd)
 	versionCmd.AddCommand(versionEKSCmd)
 	versionCmd.AddCommand(versionRDSCmd)
+	versionCmd.AddCommand(versionMSKCmd)
 }
 
 func buildClient(ctx context.Context) (*awsclient.Client, error) {
@@ -1580,6 +1587,44 @@ func runVersionRDS(cmd *cobra.Command, args []string) error {
 
 	for _, inst := range rdsSummary.Instances {
 		fmt.Fprintf(w, "instance\t%s\t%s\t%s\t%s\t%s\n", inst.Identifier, inst.Engine, inst.EngineVersion, inst.InstanceClass, inst.Status)
+	}
+
+	w.Flush()
+	return nil
+}
+
+func runVersionMSK(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var mskOpts []awsclient.MSKOption
+	if verbose {
+		mskOpts = append(mskOpts, awsclient.WithMSKStatusFunc(statusf))
+	}
+	mskOpts = append(mskOpts, awsclient.WithMSKConcurrency(concurrency))
+	mskClient := client.MSKClient(mskOpts...)
+
+	statusf("Fetching MSK clusters...")
+	clusters, err := mskClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing MSK clusters: %w", err)
+	}
+
+	// Sort clusters by name
+	sort.Slice(clusters, func(i, j int) bool {
+		return clusters[i].ClusterName < clusters[j].ClusterName
+	})
+
+	// Print table output
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "CLUSTER\tKAFKA VERSION\tINSTANCE TYPE\tBROKERS\tSTATE")
+
+	for _, cluster := range clusters {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", cluster.ClusterName, cluster.KafkaVersion, cluster.InstanceType, cluster.NumberOfBrokerNodes, cluster.State)
 	}
 
 	w.Flush()
