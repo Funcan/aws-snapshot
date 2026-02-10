@@ -85,13 +85,14 @@ type ClusterSummary struct {
 
 // NodeGroupSummary represents key attributes of an EKS node group.
 type NodeGroupSummary struct {
-	Name           string   `json:"name"`
-	Status         string   `json:"status"`
-	InstanceTypes  []string `json:"instance_types,omitempty"`
-	AmiType        string   `json:"ami_type,omitempty"`
-	ReleaseVersion string   `json:"release_version,omitempty"`
-	MinSize        int32    `json:"min_size"`
-	MaxSize        int32    `json:"max_size"`
+	Name              string   `json:"name"`
+	Status            string   `json:"status"`
+	InstanceTypes     []string `json:"instance_types,omitempty"`
+	AmiType           string   `json:"ami_type,omitempty"`
+	KubernetesVersion string   `json:"kubernetes_version,omitempty"`
+	ReleaseVersion    string   `json:"release_version,omitempty"`
+	MinSize           int32    `json:"min_size"`
+	MaxSize           int32    `json:"max_size"`
 }
 
 // Summarise returns a summary of all EKS clusters.
@@ -273,11 +274,12 @@ func (e *EKSClient) describeNodeGroup(ctx context.Context, clusterName, ngName s
 
 	ng := resp.Nodegroup
 	summary := NodeGroupSummary{
-		Name:           aws.ToString(ng.NodegroupName),
-		Status:         string(ng.Status),
-		InstanceTypes:  ng.InstanceTypes,
-		AmiType:        string(ng.AmiType),
-		ReleaseVersion: aws.ToString(ng.ReleaseVersion),
+		Name:              aws.ToString(ng.NodegroupName),
+		Status:            string(ng.Status),
+		InstanceTypes:     ng.InstanceTypes,
+		AmiType:           string(ng.AmiType),
+		KubernetesVersion: aws.ToString(ng.Version),
+		ReleaseVersion:    aws.ToString(ng.ReleaseVersion),
 	}
 
 	if ng.ScalingConfig != nil {

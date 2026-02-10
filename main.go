@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"text/tabwriter"
 
 	"aws-snapshot/pkg/awsclient"
 
@@ -160,6 +161,17 @@ var snapshotAllCmd = &cobra.Command{
 	RunE:  runSnapshotAll,
 }
 
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Show version information for AWS resources",
+}
+
+var versionEKSCmd = &cobra.Command{
+	Use:   "eks",
+	Short: "Show EKS cluster and node versions",
+	RunE:  runVersionEKS,
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS profile to use")
 	rootCmd.PersistentFlags().StringVar(&region, "region", "", "AWS region to use")
@@ -168,6 +180,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&outfile, "outfile", "o", "", "Output file path or s3://bucket/key URL (default: stdout)")
 
 	rootCmd.AddCommand(snapshotCmd)
+	rootCmd.AddCommand(versionCmd)
 	snapshotCmd.AddCommand(snapshotS3Cmd)
 	snapshotCmd.AddCommand(snapshotEKSCmd)
 	snapshotCmd.AddCommand(snapshotRDSCmd)
@@ -188,6 +201,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotEventBridgeCmd)
 	snapshotCmd.AddCommand(snapshotIAMCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
+	versionCmd.AddCommand(versionEKSCmd)
 }
 
 func buildClient(ctx context.Context) (*awsclient.Client, error) {
@@ -1459,5 +1473,59 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("encoding JSON: %w", err)
 	}
 
+	return nil
+}
+
+func runVersionEKS(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var eksOpts []awsclient.EKSOption
+	if verbose {
+		eksOpts = append(eksOpts, awsclient.WithEKSStatusFunc(statusf))
+	}
+	eksOpts = append(eksOpts, awsclient.WithEKSConcurrency(concurrency))
+	eksClient := client.EKSClient(eksOpts...)
+
+	statusf("Fetching EKS clusters...")
+	clusters, err := eksClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing EKS clusters: %w", err)
+	}
+
+	// Sort clusters by name
+	sort.Slice(clusters, func(i, j int) bool {
+		return clusters[i].Name < clusters[j].Name
+	})
+
+	// Print table output
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "CLUSTER\tVERSION\tNODEGROUP\tK8S VERSION\tAMI TYPE\tAMI VERSION")
+
+	for _, cluster := range clusters {
+		if len(cluster.NodeGroups) == 0 {
+			fmt.Fprintf(w, "%s\t%s\t-\t-\t-\t-\n", cluster.Name, cluster.Version)
+			continue
+		}
+		// Sort node groups by name
+		sort.Slice(cluster.NodeGroups, func(i, j int) bool {
+			return cluster.NodeGroups[i].Name < cluster.NodeGroups[j].Name
+		})
+		for i, ng := range cluster.NodeGroups {
+			clusterName := cluster.Name
+			clusterVersion := cluster.Version
+			if i > 0 {
+				clusterName = ""
+				clusterVersion = ""
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", clusterName, clusterVersion, ng.Name, ng.KubernetesVersion, ng.AmiType, ng.ReleaseVersion)
+		}
+	}
+
+	w.Flush()
 	return nil
 }
