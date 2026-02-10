@@ -72,8 +72,6 @@ type TableSummary struct {
 	BillingMode            string             `json:"billing_mode"`
 	ReadCapacityUnits      int64              `json:"read_capacity_units,omitempty"`
 	WriteCapacityUnits     int64              `json:"write_capacity_units,omitempty"`
-	ItemCount              int64              `json:"item_count"`
-	TableSizeBytes         int64              `json:"table_size_bytes"`
 	KeySchema              []KeySchemaElement `json:"key_schema"`
 	GlobalSecondaryIndexes []GSISummary       `json:"global_secondary_indexes,omitempty"`
 	LocalSecondaryIndexes  []LSISummary       `json:"local_secondary_indexes,omitempty"`
@@ -199,8 +197,6 @@ func (d *DynamoDBClient) describeTable(ctx context.Context, tableName string) (T
 	table := resp.Table
 	summary.TableArn = aws.ToString(table.TableArn)
 	summary.TableStatus = string(table.TableStatus)
-	summary.ItemCount = aws.ToInt64(table.ItemCount)
-	summary.TableSizeBytes = aws.ToInt64(table.TableSizeBytes)
 	summary.DeletionProtection = aws.ToBool(table.DeletionProtectionEnabled)
 
 	if table.TableClassSummary != nil {
