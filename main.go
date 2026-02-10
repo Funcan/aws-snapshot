@@ -172,6 +172,12 @@ var versionEKSCmd = &cobra.Command{
 	RunE:  runVersionEKS,
 }
 
+var versionRDSCmd = &cobra.Command{
+	Use:   "rds",
+	Short: "Show RDS instance and cluster engine versions",
+	RunE:  runVersionRDS,
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS profile to use")
 	rootCmd.PersistentFlags().StringVar(&region, "region", "", "AWS region to use")
@@ -202,6 +208,7 @@ func init() {
 	snapshotCmd.AddCommand(snapshotIAMCmd)
 	snapshotCmd.AddCommand(snapshotAllCmd)
 	versionCmd.AddCommand(versionEKSCmd)
+	versionCmd.AddCommand(versionRDSCmd)
 }
 
 func buildClient(ctx context.Context) (*awsclient.Client, error) {
@@ -1524,6 +1531,55 @@ func runVersionEKS(cmd *cobra.Command, args []string) error {
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", clusterName, clusterVersion, ng.Name, ng.KubernetesVersion, ng.AmiType, ng.ReleaseVersion)
 		}
+	}
+
+	w.Flush()
+	return nil
+}
+
+func runVersionRDS(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var rdsOpts []awsclient.RDSOption
+	if verbose {
+		rdsOpts = append(rdsOpts, awsclient.WithRDSStatusFunc(statusf))
+	}
+	rdsOpts = append(rdsOpts, awsclient.WithRDSConcurrency(concurrency))
+	rdsClient := client.RDSClient(rdsOpts...)
+
+	statusf("Fetching RDS resources...")
+	rdsSummary, err := rdsClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing RDS resources: %w", err)
+	}
+
+	// Sort instances and clusters by identifier
+	sort.Slice(rdsSummary.Instances, func(i, j int) bool {
+		return rdsSummary.Instances[i].Identifier < rdsSummary.Instances[j].Identifier
+	})
+	sort.Slice(rdsSummary.Clusters, func(i, j int) bool {
+		return rdsSummary.Clusters[i].Identifier < rdsSummary.Clusters[j].Identifier
+	})
+
+	// Print table output
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TYPE\tIDENTIFIER\tENGINE\tVERSION\tCLASS/MODE\tSTATUS")
+
+	for _, cluster := range rdsSummary.Clusters {
+		mode := cluster.EngineMode
+		if mode == "" {
+			mode = "provisioned"
+		}
+		fmt.Fprintf(w, "cluster\t%s\t%s\t%s\t%s\t%s\n", cluster.Identifier, cluster.Engine, cluster.EngineVersion, mode, cluster.Status)
+	}
+
+	for _, inst := range rdsSummary.Instances {
+		fmt.Fprintf(w, "instance\t%s\t%s\t%s\t%s\t%s\n", inst.Identifier, inst.Engine, inst.EngineVersion, inst.InstanceClass, inst.Status)
 	}
 
 	w.Flush()
