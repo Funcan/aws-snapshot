@@ -32,5 +32,5 @@ changelog:
 
 release:
   github:
-    owner: duncan
+    owner: Funcan
     name: aws-snapshot
