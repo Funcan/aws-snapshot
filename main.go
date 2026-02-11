@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"text/tabwriter"
 
 	"aws-snapshot/pkg/awsclient"
@@ -1090,415 +1091,544 @@ func runSnapshotAll(cmd *cobra.Command, args []string) error {
 	}
 
 	var snap Snapshot
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
 
-	// Fetch S3 buckets
-	var s3Opts []awsclient.S3Option
-	if verbose {
-		s3Opts = append(s3Opts, awsclient.WithStatusFunc(statusf))
-	}
-	s3Opts = append(s3Opts, awsclient.WithConcurrency(concurrency))
-	s3client := client.S3Client(s3Opts...)
+	// S3
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.S3Option
+		if verbose {
+			opts = append(opts, awsclient.WithStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithConcurrency(concurrency))
+		c := client.S3Client(opts...)
 
-	statusf("Fetching S3 buckets...")
-	buckets, err := s3client.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing S3 buckets: %w", err)
-	}
-
-	sort.Slice(buckets, func(i, j int) bool {
-		return buckets[i].Name < buckets[j].Name
-	})
-	snap.S3 = buckets
-
-	// Fetch EKS clusters
-	var eksOpts []awsclient.EKSOption
-	if verbose {
-		eksOpts = append(eksOpts, awsclient.WithEKSStatusFunc(statusf))
-	}
-	eksOpts = append(eksOpts, awsclient.WithEKSConcurrency(concurrency))
-	eksClient := client.EKSClient(eksOpts...)
-
-	statusf("Fetching EKS clusters...")
-	clusters, err := eksClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing EKS clusters: %w", err)
-	}
-
-	sort.Slice(clusters, func(i, j int) bool {
-		return clusters[i].Name < clusters[j].Name
-	})
-	snap.EKS = clusters
-
-	// Fetch RDS instances and clusters
-	var rdsOpts []awsclient.RDSOption
-	if verbose {
-		rdsOpts = append(rdsOpts, awsclient.WithRDSStatusFunc(statusf))
-	}
-	rdsOpts = append(rdsOpts, awsclient.WithRDSConcurrency(concurrency))
-	rdsClient := client.RDSClient(rdsOpts...)
-
-	statusf("Fetching RDS instances and clusters...")
-	rdsSummary, err := rdsClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing RDS resources: %w", err)
-	}
-
-	sort.Slice(rdsSummary.Instances, func(i, j int) bool {
-		return rdsSummary.Instances[i].Identifier < rdsSummary.Instances[j].Identifier
-	})
-	sort.Slice(rdsSummary.Clusters, func(i, j int) bool {
-		return rdsSummary.Clusters[i].Identifier < rdsSummary.Clusters[j].Identifier
-	})
-	snap.RDS = rdsSummary
-
-	// Fetch OpenSearch domains
-	var osOpts []awsclient.OpenSearchOption
-	if verbose {
-		osOpts = append(osOpts, awsclient.WithOpenSearchStatusFunc(statusf))
-	}
-	osClient := client.OpenSearchClient(osOpts...)
-
-	statusf("Fetching OpenSearch domains...")
-	domains, err := osClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing OpenSearch domains: %w", err)
-	}
-
-	sort.Slice(domains, func(i, j int) bool {
-		return domains[i].DomainName < domains[j].DomainName
-	})
-	snap.OpenSearch = domains
-
-	// Fetch ElastiCache clusters and replication groups
-	var ecOpts []awsclient.ElastiCacheOption
-	if verbose {
-		ecOpts = append(ecOpts, awsclient.WithElastiCacheStatusFunc(statusf))
-	}
-	ecClient := client.ElastiCacheClient(ecOpts...)
-
-	statusf("Fetching ElastiCache resources...")
-	ecSummary, err := ecClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing ElastiCache resources: %w", err)
-	}
-
-	sort.Slice(ecSummary.CacheClusters, func(i, j int) bool {
-		return ecSummary.CacheClusters[i].CacheClusterId < ecSummary.CacheClusters[j].CacheClusterId
-	})
-	sort.Slice(ecSummary.ReplicationGroups, func(i, j int) bool {
-		return ecSummary.ReplicationGroups[i].ReplicationGroupId < ecSummary.ReplicationGroups[j].ReplicationGroupId
-	})
-	snap.ElastiCache = ecSummary
-
-	// Fetch DynamoDB tables
-	var ddbOpts []awsclient.DynamoDBOption
-	if verbose {
-		ddbOpts = append(ddbOpts, awsclient.WithDynamoDBStatusFunc(statusf))
-	}
-	ddbOpts = append(ddbOpts, awsclient.WithDynamoDBConcurrency(concurrency))
-	ddbClient := client.DynamoDBClient(ddbOpts...)
-
-	statusf("Fetching DynamoDB tables...")
-	tables, err := ddbClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing DynamoDB tables: %w", err)
-	}
-
-	sort.Slice(tables, func(i, j int) bool {
-		return tables[i].TableName < tables[j].TableName
-	})
-	snap.DynamoDB = tables
-
-	// Fetch Lambda functions
-	var lambdaOpts []awsclient.LambdaOption
-	if verbose {
-		lambdaOpts = append(lambdaOpts, awsclient.WithLambdaStatusFunc(statusf))
-	}
-	lambdaOpts = append(lambdaOpts, awsclient.WithLambdaConcurrency(concurrency))
-	lambdaClient := client.LambdaClient(lambdaOpts...)
-
-	statusf("Fetching Lambda functions...")
-	functions, err := lambdaClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing Lambda functions: %w", err)
-	}
-
-	sort.Slice(functions, func(i, j int) bool {
-		return functions[i].FunctionName < functions[j].FunctionName
-	})
-	snap.Lambda = functions
-
-	// Fetch ECR repositories
-	var ecrOpts []awsclient.ECROption
-	if verbose {
-		ecrOpts = append(ecrOpts, awsclient.WithECRStatusFunc(statusf))
-	}
-	ecrOpts = append(ecrOpts, awsclient.WithECRConcurrency(concurrency))
-	ecrClient := client.ECRClient(ecrOpts...)
-
-	statusf("Fetching ECR repositories...")
-	repos, err := ecrClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing ECR repositories: %w", err)
-	}
-
-	sort.Slice(repos, func(i, j int) bool {
-		return repos[i].RepositoryName < repos[j].RepositoryName
-	})
-	snap.ECR = repos
-
-	// Fetch ECS clusters and services
-	var ecsOpts []awsclient.ECSOption
-	if verbose {
-		ecsOpts = append(ecsOpts, awsclient.WithECSStatusFunc(statusf))
-	}
-	ecsOpts = append(ecsOpts, awsclient.WithECSConcurrency(concurrency))
-	ecsClient := client.ECSClient(ecsOpts...)
-
-	statusf("Fetching ECS clusters and services...")
-	ecsSummary, err := ecsClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing ECS resources: %w", err)
-	}
-
-	sort.Slice(ecsSummary.Clusters, func(i, j int) bool {
-		return ecsSummary.Clusters[i].ClusterName < ecsSummary.Clusters[j].ClusterName
-	})
-	for i := range ecsSummary.Clusters {
-		sort.Slice(ecsSummary.Clusters[i].Services, func(a, b int) bool {
-			return ecsSummary.Clusters[i].Services[a].ServiceName < ecsSummary.Clusters[i].Services[b].ServiceName
+		statusf("Fetching S3 buckets...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing S3 buckets: %w", err)
+			return
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].Name < result[j].Name
 		})
-	}
-	snap.ECS = ecsSummary
+		mu.Lock()
+		snap.S3 = result
+		mu.Unlock()
+	}()
 
-	// Fetch ELB load balancers and target groups
-	var elbOpts []awsclient.ELBOption
-	if verbose {
-		elbOpts = append(elbOpts, awsclient.WithELBStatusFunc(statusf))
-	}
-	elbOpts = append(elbOpts, awsclient.WithELBConcurrency(concurrency))
-	elbClient := client.ELBClient(elbOpts...)
+	// EKS
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.EKSOption
+		if verbose {
+			opts = append(opts, awsclient.WithEKSStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithEKSConcurrency(concurrency))
+		c := client.EKSClient(opts...)
 
-	statusf("Fetching load balancers and target groups...")
-	elbSummary, err := elbClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing ELB resources: %w", err)
-	}
-
-	sort.Slice(elbSummary.LoadBalancers, func(i, j int) bool {
-		return elbSummary.LoadBalancers[i].LoadBalancerName < elbSummary.LoadBalancers[j].LoadBalancerName
-	})
-	sort.Slice(elbSummary.TargetGroups, func(i, j int) bool {
-		return elbSummary.TargetGroups[i].TargetGroupName < elbSummary.TargetGroups[j].TargetGroupName
-	})
-	snap.ELB = elbSummary
-
-	// Fetch Route53 hosted zones
-	var r53Opts []awsclient.Route53Option
-	if verbose {
-		r53Opts = append(r53Opts, awsclient.WithRoute53StatusFunc(statusf))
-	}
-	r53Opts = append(r53Opts, awsclient.WithRoute53Concurrency(concurrency))
-	r53Client := client.Route53Client(r53Opts...)
-
-	statusf("Fetching Route53 hosted zones...")
-	zones, err := r53Client.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing Route53 zones: %w", err)
-	}
-
-	sort.Slice(zones, func(i, j int) bool {
-		return zones[i].Name < zones[j].Name
-	})
-	for i := range zones {
-		sort.Slice(zones[i].RecordSets, func(a, b int) bool {
-			if zones[i].RecordSets[a].Name != zones[i].RecordSets[b].Name {
-				return zones[i].RecordSets[a].Name < zones[i].RecordSets[b].Name
-			}
-			return zones[i].RecordSets[a].Type < zones[i].RecordSets[b].Type
+		statusf("Fetching EKS clusters...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing EKS clusters: %w", err)
+			return
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].Name < result[j].Name
 		})
-	}
-	snap.Route53 = zones
+		mu.Lock()
+		snap.EKS = result
+		mu.Unlock()
+	}()
 
-	// Fetch MSK clusters
-	var mskOpts []awsclient.MSKOption
-	if verbose {
-		mskOpts = append(mskOpts, awsclient.WithMSKStatusFunc(statusf))
-	}
-	mskOpts = append(mskOpts, awsclient.WithMSKConcurrency(concurrency))
-	mskClient := client.MSKClient(mskOpts...)
+	// RDS
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.RDSOption
+		if verbose {
+			opts = append(opts, awsclient.WithRDSStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithRDSConcurrency(concurrency))
+		c := client.RDSClient(opts...)
 
-	statusf("Fetching MSK clusters...")
-	mskClusters, err := mskClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing MSK clusters: %w", err)
-	}
-
-	sort.Slice(mskClusters, func(i, j int) bool {
-		return mskClusters[i].ClusterName < mskClusters[j].ClusterName
-	})
-	snap.MSK = mskClusters
-
-	// Fetch VPCs
-	var vpcOpts []awsclient.VPCOption
-	if verbose {
-		vpcOpts = append(vpcOpts, awsclient.WithVPCStatusFunc(statusf))
-	}
-	vpcOpts = append(vpcOpts, awsclient.WithVPCConcurrency(concurrency))
-	vpcClient := client.VPCClient(vpcOpts...)
-
-	statusf("Fetching VPCs...")
-	vpcs, err := vpcClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing VPCs: %w", err)
-	}
-
-	sort.Slice(vpcs, func(i, j int) bool {
-		return vpcs[i].VpcId < vpcs[j].VpcId
-	})
-	for i := range vpcs {
-		sort.Slice(vpcs[i].Subnets, func(a, b int) bool {
-			return vpcs[i].Subnets[a].SubnetId < vpcs[i].Subnets[b].SubnetId
+		statusf("Fetching RDS instances and clusters...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing RDS resources: %w", err)
+			return
+		}
+		sort.Slice(result.Instances, func(i, j int) bool {
+			return result.Instances[i].Identifier < result.Instances[j].Identifier
 		})
-		sort.Slice(vpcs[i].SecurityGroups, func(a, b int) bool {
-			return vpcs[i].SecurityGroups[a].GroupId < vpcs[i].SecurityGroups[b].GroupId
+		sort.Slice(result.Clusters, func(i, j int) bool {
+			return result.Clusters[i].Identifier < result.Clusters[j].Identifier
 		})
-		sort.Slice(vpcs[i].RouteTables, func(a, b int) bool {
-			return vpcs[i].RouteTables[a].RouteTableId < vpcs[i].RouteTables[b].RouteTableId
+		mu.Lock()
+		snap.RDS = result
+		mu.Unlock()
+	}()
+
+	// OpenSearch
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.OpenSearchOption
+		if verbose {
+			opts = append(opts, awsclient.WithOpenSearchStatusFunc(statusf))
+		}
+		c := client.OpenSearchClient(opts...)
+
+		statusf("Fetching OpenSearch domains...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing OpenSearch domains: %w", err)
+			return
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].DomainName < result[j].DomainName
 		})
-	}
-	snap.VPC = vpcs
+		mu.Lock()
+		snap.OpenSearch = result
+		mu.Unlock()
+	}()
 
-	// Fetch CloudFront distributions
-	var cfOpts []awsclient.CloudFrontOption
-	if verbose {
-		cfOpts = append(cfOpts, awsclient.WithCloudFrontStatusFunc(statusf))
-	}
-	cfOpts = append(cfOpts, awsclient.WithCloudFrontConcurrency(concurrency))
-	cfClient := client.CloudFrontClient(cfOpts...)
+	// ElastiCache
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.ElastiCacheOption
+		if verbose {
+			opts = append(opts, awsclient.WithElastiCacheStatusFunc(statusf))
+		}
+		c := client.ElastiCacheClient(opts...)
 
-	statusf("Fetching CloudFront distributions...")
-	distributions, err := cfClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing CloudFront distributions: %w", err)
-	}
-
-	sort.Slice(distributions, func(i, j int) bool {
-		return distributions[i].Id < distributions[j].Id
-	})
-	snap.CloudFront = distributions
-
-	// Fetch API Gateway
-	var apigwOpts []awsclient.APIGatewayOption
-	if verbose {
-		apigwOpts = append(apigwOpts, awsclient.WithAPIGatewayStatusFunc(statusf))
-	}
-	apigwOpts = append(apigwOpts, awsclient.WithAPIGatewayConcurrency(concurrency))
-	apigwClient := client.APIGatewayClient(apigwOpts...)
-
-	statusf("Fetching API Gateway APIs...")
-	apigwSummary, err := apigwClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing API Gateway APIs: %w", err)
-	}
-
-	sort.Slice(apigwSummary.RestAPIs, func(i, j int) bool {
-		return apigwSummary.RestAPIs[i].Name < apigwSummary.RestAPIs[j].Name
-	})
-	sort.Slice(apigwSummary.HttpAPIs, func(i, j int) bool {
-		return apigwSummary.HttpAPIs[i].Name < apigwSummary.HttpAPIs[j].Name
-	})
-	snap.APIGateway = apigwSummary
-
-	// Fetch SQS queues
-	var sqsOpts []awsclient.SQSOption
-	if verbose {
-		sqsOpts = append(sqsOpts, awsclient.WithSQSStatusFunc(statusf))
-	}
-	sqsOpts = append(sqsOpts, awsclient.WithSQSConcurrency(concurrency))
-	sqsClient := client.SQSClient(sqsOpts...)
-
-	statusf("Fetching SQS queues...")
-	queues, err := sqsClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing SQS queues: %w", err)
-	}
-
-	sort.Slice(queues, func(i, j int) bool {
-		return queues[i].Name < queues[j].Name
-	})
-	snap.SQS = queues
-
-	// Fetch SNS topics
-	var snsOpts []awsclient.SNSOption
-	if verbose {
-		snsOpts = append(snsOpts, awsclient.WithSNSStatusFunc(statusf))
-	}
-	snsOpts = append(snsOpts, awsclient.WithSNSConcurrency(concurrency))
-	snsClient := client.SNSClient(snsOpts...)
-
-	statusf("Fetching SNS topics...")
-	topics, err := snsClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing SNS topics: %w", err)
-	}
-
-	sort.Slice(topics, func(i, j int) bool {
-		return topics[i].Name < topics[j].Name
-	})
-	snap.SNS = topics
-
-	// Fetch EventBridge event buses
-	var ebOpts []awsclient.EventBridgeOption
-	if verbose {
-		ebOpts = append(ebOpts, awsclient.WithEventBridgeStatusFunc(statusf))
-	}
-	ebOpts = append(ebOpts, awsclient.WithEventBridgeConcurrency(concurrency))
-	ebClient := client.EventBridgeClient(ebOpts...)
-
-	statusf("Fetching EventBridge event buses...")
-	ebSummary, err := ebClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing EventBridge event buses: %w", err)
-	}
-
-	sort.Slice(ebSummary.EventBuses, func(i, j int) bool {
-		return ebSummary.EventBuses[i].Name < ebSummary.EventBuses[j].Name
-	})
-	for idx := range ebSummary.EventBuses {
-		sort.Slice(ebSummary.EventBuses[idx].Rules, func(i, j int) bool {
-			return ebSummary.EventBuses[idx].Rules[i].Name < ebSummary.EventBuses[idx].Rules[j].Name
+		statusf("Fetching ElastiCache resources...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing ElastiCache resources: %w", err)
+			return
+		}
+		sort.Slice(result.CacheClusters, func(i, j int) bool {
+			return result.CacheClusters[i].CacheClusterId < result.CacheClusters[j].CacheClusterId
 		})
-	}
-	snap.EventBridge = ebSummary
+		sort.Slice(result.ReplicationGroups, func(i, j int) bool {
+			return result.ReplicationGroups[i].ReplicationGroupId < result.ReplicationGroups[j].ReplicationGroupId
+		})
+		mu.Lock()
+		snap.ElastiCache = result
+		mu.Unlock()
+	}()
 
-	// Fetch IAM resources
-	var iamOpts []awsclient.IAMOption
-	if verbose {
-		iamOpts = append(iamOpts, awsclient.WithIAMStatusFunc(statusf))
-	}
-	iamOpts = append(iamOpts, awsclient.WithIAMConcurrency(concurrency))
-	iamClient := client.IAMClient(iamOpts...)
+	// DynamoDB
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.DynamoDBOption
+		if verbose {
+			opts = append(opts, awsclient.WithDynamoDBStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithDynamoDBConcurrency(concurrency))
+		c := client.DynamoDBClient(opts...)
 
-	statusf("Fetching IAM resources...")
-	iamSummary, err := iamClient.Summarise(ctx)
-	if err != nil {
-		return fmt.Errorf("listing IAM resources: %w", err)
-	}
+		statusf("Fetching DynamoDB tables...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing DynamoDB tables: %w", err)
+			return
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].TableName < result[j].TableName
+		})
+		mu.Lock()
+		snap.DynamoDB = result
+		mu.Unlock()
+	}()
 
-	sort.Slice(iamSummary.Users, func(i, j int) bool {
-		return iamSummary.Users[i].Name < iamSummary.Users[j].Name
-	})
-	sort.Slice(iamSummary.Groups, func(i, j int) bool {
-		return iamSummary.Groups[i].Name < iamSummary.Groups[j].Name
-	})
-	sort.Slice(iamSummary.Roles, func(i, j int) bool {
-		return iamSummary.Roles[i].Name < iamSummary.Roles[j].Name
-	})
-	sort.Slice(iamSummary.Policies, func(i, j int) bool {
-		return iamSummary.Policies[i].Name < iamSummary.Policies[j].Name
-	})
-	snap.IAM = iamSummary
+	// Lambda
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.LambdaOption
+		if verbose {
+			opts = append(opts, awsclient.WithLambdaStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithLambdaConcurrency(concurrency))
+		c := client.LambdaClient(opts...)
+
+		statusf("Fetching Lambda functions...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing Lambda functions: %w", err)
+			return
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].FunctionName < result[j].FunctionName
+		})
+		mu.Lock()
+		snap.Lambda = result
+		mu.Unlock()
+	}()
+
+	// ECR
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.ECROption
+		if verbose {
+			opts = append(opts, awsclient.WithECRStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithECRConcurrency(concurrency))
+		c := client.ECRClient(opts...)
+
+		statusf("Fetching ECR repositories...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing ECR repositories: %w", err)
+			return
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].RepositoryName < result[j].RepositoryName
+		})
+		mu.Lock()
+		snap.ECR = result
+		mu.Unlock()
+	}()
+
+	// ECS
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.ECSOption
+		if verbose {
+			opts = append(opts, awsclient.WithECSStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithECSConcurrency(concurrency))
+		c := client.ECSClient(opts...)
+
+		statusf("Fetching ECS clusters and services...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing ECS resources: %w", err)
+			return
+		}
+		sort.Slice(result.Clusters, func(i, j int) bool {
+			return result.Clusters[i].ClusterName < result.Clusters[j].ClusterName
+		})
+		for i := range result.Clusters {
+			sort.Slice(result.Clusters[i].Services, func(a, b int) bool {
+				return result.Clusters[i].Services[a].ServiceName < result.Clusters[i].Services[b].ServiceName
+			})
+		}
+		mu.Lock()
+		snap.ECS = result
+		mu.Unlock()
+	}()
+
+	// ELB
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.ELBOption
+		if verbose {
+			opts = append(opts, awsclient.WithELBStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithELBConcurrency(concurrency))
+		c := client.ELBClient(opts...)
+
+		statusf("Fetching load balancers and target groups...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing ELB resources: %w", err)
+			return
+		}
+		sort.Slice(result.LoadBalancers, func(i, j int) bool {
+			return result.LoadBalancers[i].LoadBalancerName < result.LoadBalancers[j].LoadBalancerName
+		})
+		sort.Slice(result.TargetGroups, func(i, j int) bool {
+			return result.TargetGroups[i].TargetGroupName < result.TargetGroups[j].TargetGroupName
+		})
+		mu.Lock()
+		snap.ELB = result
+		mu.Unlock()
+	}()
+
+	// Route53
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.Route53Option
+		if verbose {
+			opts = append(opts, awsclient.WithRoute53StatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithRoute53Concurrency(concurrency))
+		c := client.Route53Client(opts...)
+
+		statusf("Fetching Route53 hosted zones...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing Route53 zones: %w", err)
+			return
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].Name < result[j].Name
+		})
+		for i := range result {
+			sort.Slice(result[i].RecordSets, func(a, b int) bool {
+				if result[i].RecordSets[a].Name != result[i].RecordSets[b].Name {
+					return result[i].RecordSets[a].Name < result[i].RecordSets[b].Name
+				}
+				return result[i].RecordSets[a].Type < result[i].RecordSets[b].Type
+			})
+		}
+		mu.Lock()
+		snap.Route53 = result
+		mu.Unlock()
+	}()
+
+	// MSK
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.MSKOption
+		if verbose {
+			opts = append(opts, awsclient.WithMSKStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithMSKConcurrency(concurrency))
+		c := client.MSKClient(opts...)
+
+		statusf("Fetching MSK clusters...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing MSK clusters: %w", err)
+			return
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].ClusterName < result[j].ClusterName
+		})
+		mu.Lock()
+		snap.MSK = result
+		mu.Unlock()
+	}()
+
+	// VPC
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.VPCOption
+		if verbose {
+			opts = append(opts, awsclient.WithVPCStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithVPCConcurrency(concurrency))
+		c := client.VPCClient(opts...)
+
+		statusf("Fetching VPCs...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing VPCs: %w", err)
+			return
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].VpcId < result[j].VpcId
+		})
+		for i := range result {
+			sort.Slice(result[i].Subnets, func(a, b int) bool {
+				return result[i].Subnets[a].SubnetId < result[i].Subnets[b].SubnetId
+			})
+			sort.Slice(result[i].SecurityGroups, func(a, b int) bool {
+				return result[i].SecurityGroups[a].GroupId < result[i].SecurityGroups[b].GroupId
+			})
+			sort.Slice(result[i].RouteTables, func(a, b int) bool {
+				return result[i].RouteTables[a].RouteTableId < result[i].RouteTables[b].RouteTableId
+			})
+		}
+		mu.Lock()
+		snap.VPC = result
+		mu.Unlock()
+	}()
+
+	// CloudFront
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.CloudFrontOption
+		if verbose {
+			opts = append(opts, awsclient.WithCloudFrontStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithCloudFrontConcurrency(concurrency))
+		c := client.CloudFrontClient(opts...)
+
+		statusf("Fetching CloudFront distributions...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing CloudFront distributions: %w", err)
+			return
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].Id < result[j].Id
+		})
+		mu.Lock()
+		snap.CloudFront = result
+		mu.Unlock()
+	}()
+
+	// API Gateway
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.APIGatewayOption
+		if verbose {
+			opts = append(opts, awsclient.WithAPIGatewayStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithAPIGatewayConcurrency(concurrency))
+		c := client.APIGatewayClient(opts...)
+
+		statusf("Fetching API Gateway APIs...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing API Gateway APIs: %w", err)
+			return
+		}
+		sort.Slice(result.RestAPIs, func(i, j int) bool {
+			return result.RestAPIs[i].Name < result.RestAPIs[j].Name
+		})
+		sort.Slice(result.HttpAPIs, func(i, j int) bool {
+			return result.HttpAPIs[i].Name < result.HttpAPIs[j].Name
+		})
+		mu.Lock()
+		snap.APIGateway = result
+		mu.Unlock()
+	}()
+
+	// SQS
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.SQSOption
+		if verbose {
+			opts = append(opts, awsclient.WithSQSStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithSQSConcurrency(concurrency))
+		c := client.SQSClient(opts...)
+
+		statusf("Fetching SQS queues...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing SQS queues: %w", err)
+			return
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].Name < result[j].Name
+		})
+		mu.Lock()
+		snap.SQS = result
+		mu.Unlock()
+	}()
+
+	// SNS
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.SNSOption
+		if verbose {
+			opts = append(opts, awsclient.WithSNSStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithSNSConcurrency(concurrency))
+		c := client.SNSClient(opts...)
+
+		statusf("Fetching SNS topics...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing SNS topics: %w", err)
+			return
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].Name < result[j].Name
+		})
+		mu.Lock()
+		snap.SNS = result
+		mu.Unlock()
+	}()
+
+	// EventBridge
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.EventBridgeOption
+		if verbose {
+			opts = append(opts, awsclient.WithEventBridgeStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithEventBridgeConcurrency(concurrency))
+		c := client.EventBridgeClient(opts...)
+
+		statusf("Fetching EventBridge event buses...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing EventBridge event buses: %w", err)
+			return
+		}
+		sort.Slice(result.EventBuses, func(i, j int) bool {
+			return result.EventBuses[i].Name < result.EventBuses[j].Name
+		})
+		for idx := range result.EventBuses {
+			sort.Slice(result.EventBuses[idx].Rules, func(i, j int) bool {
+				return result.EventBuses[idx].Rules[i].Name < result.EventBuses[idx].Rules[j].Name
+			})
+		}
+		mu.Lock()
+		snap.EventBridge = result
+		mu.Unlock()
+	}()
+
+	// IAM
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var opts []awsclient.IAMOption
+		if verbose {
+			opts = append(opts, awsclient.WithIAMStatusFunc(statusf))
+		}
+		opts = append(opts, awsclient.WithIAMConcurrency(concurrency))
+		c := client.IAMClient(opts...)
+
+		statusf("Fetching IAM resources...")
+		result, err := c.Summarise(ctx)
+		if err != nil {
+			errs <- fmt.Errorf("listing IAM resources: %w", err)
+			return
+		}
+		sort.Slice(result.Users, func(i, j int) bool {
+			return result.Users[i].Name < result.Users[j].Name
+		})
+		sort.Slice(result.Groups, func(i, j int) bool {
+			return result.Groups[i].Name < result.Groups[j].Name
+		})
+		sort.Slice(result.Roles, func(i, j int) bool {
+			return result.Roles[i].Name < result.Roles[j].Name
+		})
+		sort.Slice(result.Policies, func(i, j int) bool {
+			return result.Policies[i].Name < result.Policies[j].Name
+		})
+		mu.Lock()
+		snap.IAM = result
+		mu.Unlock()
+	}()
+
+	wg.Wait()
+	close(errs)
+
+	// Collect any errors
+	var errMsgs []string
+	for err := range errs {
+		errMsgs = append(errMsgs, err.Error())
+	}
+	if len(errMsgs) > 0 {
+		return fmt.Errorf("snapshot errors:\n  %s", strings.Join(errMsgs, "\n  "))
+	}
 
 	if err := outputSnapshot(snap); err != nil {
 		return fmt.Errorf("encoding JSON: %w", err)
