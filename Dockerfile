@@ -11,7 +11,8 @@ RUN go mod download
 COPY . .
 
 # Build static binary
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o aws-snapshot .
+RUN VERSION=$(git describe --tags --exact-match 2>/dev/null || echo "$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)-dev-$(git rev-parse --short HEAD)") && \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.version=${VERSION}" -o aws-snapshot .
 
 # Final stage
 FROM alpine:3.19

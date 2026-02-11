@@ -18,6 +18,8 @@ import (
 )
 
 var (
+	version = "dev"
+
 	profile     string
 	region      string
 	verbose     bool
@@ -32,8 +34,9 @@ func main() {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "aws-snapshot",
-	Short: "Capture diffable snapshots of AWS resources",
+	Use:     "aws-snapshot",
+	Short:   "Capture diffable snapshots of AWS resources",
+	Version: version,
 }
 
 var snapshotCmd = &cobra.Command{
