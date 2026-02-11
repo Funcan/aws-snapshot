@@ -259,12 +259,7 @@ func (e *EventBridgeClient) describeEventBus(ctx context.Context, bus eventBusIn
 		if err != nil {
 			return EventBusSummary{}, fmt.Errorf("list tags for event bus %s: %w", bus.name, err)
 		}
-		if len(tagsResp.Tags) > 0 {
-			summary.Tags = make(map[string]string)
-			for _, tag := range tagsResp.Tags {
-				summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-			}
-		}
+		summary.Tags = tagsToMap(tagsResp.Tags)
 	}
 
 	return summary, nil

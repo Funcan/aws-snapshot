@@ -353,17 +353,6 @@ func (v *VPCClient) describeVPC(ctx context.Context, vpc vpcInfo) (VPCSummary, e
 	return summary, nil
 }
 
-func tagsToMap(tags []types.Tag) map[string]string {
-	if len(tags) == 0 {
-		return nil
-	}
-	m := make(map[string]string)
-	for _, tag := range tags {
-		m[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-	}
-	return m
-}
-
 func (v *VPCClient) listSubnets(ctx context.Context, vpcId string) ([]SubnetSummary, error) {
 	var subnets []SubnetSummary
 

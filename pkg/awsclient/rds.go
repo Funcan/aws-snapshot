@@ -184,12 +184,7 @@ func (r *RDSClient) listInstances(ctx context.Context) ([]DBInstanceSummary, err
 			}
 
 			// Convert tags
-			if len(inst.TagList) > 0 {
-				summary.Tags = make(map[string]string)
-				for _, tag := range inst.TagList {
-					summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-				}
-			}
+			summary.Tags = tagsToMap(inst.TagList)
 
 			summaries = append(summaries, summary)
 		}
@@ -238,12 +233,7 @@ func (r *RDSClient) listClusters(ctx context.Context) ([]DBClusterSummary, error
 			}
 
 			// Convert tags
-			if len(cluster.TagList) > 0 {
-				summary.Tags = make(map[string]string)
-				for _, tag := range cluster.TagList {
-					summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-				}
-			}
+			summary.Tags = tagsToMap(cluster.TagList)
 
 			clusters = append(clusters, summary)
 		}

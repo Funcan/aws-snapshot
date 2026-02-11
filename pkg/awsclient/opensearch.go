@@ -193,12 +193,7 @@ func (o *OpenSearchClient) Summarise(ctx context.Context) ([]DomainSummary, erro
 		if err != nil {
 			return nil, fmt.Errorf("ListTags for %s: %w", summaries[i].DomainName, err)
 		}
-		if len(tagsResp.TagList) > 0 {
-			summaries[i].Tags = make(map[string]string)
-			for _, tag := range tagsResp.TagList {
-				summaries[i].Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-			}
-		}
+		summaries[i].Tags = tagsToMap(tagsResp.TagList)
 	}
 
 	return summaries, nil

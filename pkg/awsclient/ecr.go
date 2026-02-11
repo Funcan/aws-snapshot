@@ -207,12 +207,7 @@ func (e *ECRClient) describeRepository(ctx context.Context, repo repoInfo) (Repo
 	if err != nil {
 		return RepositorySummary{}, fmt.Errorf("list tags for repository %s: %w", repo.name, err)
 	}
-	if len(tagsResp.Tags) > 0 {
-		summary.Tags = make(map[string]string)
-		for _, tag := range tagsResp.Tags {
-			summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-		}
-	}
+	summary.Tags = tagsToMap(tagsResp.Tags)
 
 	return summary, nil
 }

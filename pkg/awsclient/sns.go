@@ -243,12 +243,7 @@ func (s *SNSClient) describeTopic(ctx context.Context, topicArn string) (TopicSu
 	if err != nil {
 		return summary, fmt.Errorf("ListTagsForResource: %w", err)
 	}
-	if len(tagsResp.Tags) > 0 {
-		summary.Tags = make(map[string]string)
-		for _, tag := range tagsResp.Tags {
-			summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-		}
-	}
+	summary.Tags = tagsToMap(tagsResp.Tags)
 
 	return summary, nil
 }

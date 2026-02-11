@@ -322,12 +322,7 @@ func (d *DynamoDBClient) describeTable(ctx context.Context, tableName string) (T
 	if err != nil {
 		return TableSummary{}, fmt.Errorf("list tags for table %s: %w", tableName, err)
 	}
-	if len(tagsResp.Tags) > 0 {
-		summary.Tags = make(map[string]string)
-		for _, tag := range tagsResp.Tags {
-			summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-		}
-	}
+	summary.Tags = tagsToMap(tagsResp.Tags)
 
 	return summary, nil
 }

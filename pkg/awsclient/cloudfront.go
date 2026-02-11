@@ -338,11 +338,8 @@ func (cf *CloudFrontClient) describeDistribution(ctx context.Context, dist distI
 	if err != nil {
 		return DistributionSummary{}, fmt.Errorf("list tags for distribution %s: %w", dist.id, err)
 	}
-	if tagsResp.Tags != nil && len(tagsResp.Tags.Items) > 0 {
-		summary.Tags = make(map[string]string)
-		for _, tag := range tagsResp.Tags.Items {
-			summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-		}
+	if tagsResp.Tags != nil {
+		summary.Tags = tagsToMap(tagsResp.Tags.Items)
 	}
 
 	return summary, nil

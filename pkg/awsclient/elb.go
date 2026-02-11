@@ -260,10 +260,7 @@ func (e *ELBClient) describeLoadBalancer(ctx context.Context, lb lbInfo) (LoadBa
 		return LoadBalancerSummary{}, fmt.Errorf("describe tags for %s: %w", lb.name, err)
 	}
 	if len(tagsResp.TagDescriptions) > 0 {
-		summary.Tags = make(map[string]string)
-		for _, tag := range tagsResp.TagDescriptions[0].Tags {
-			summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-		}
+		summary.Tags = tagsToMap(tagsResp.TagDescriptions[0].Tags)
 	}
 
 	return summary, nil
@@ -297,10 +294,7 @@ func (e *ELBClient) listTargetGroups(ctx context.Context) ([]TargetGroupSummary,
 				ResourceArns: []string{aws.ToString(tg.TargetGroupArn)},
 			})
 			if err == nil && len(tagsResp.TagDescriptions) > 0 {
-				summary.Tags = make(map[string]string)
-				for _, tag := range tagsResp.TagDescriptions[0].Tags {
-					summary.Tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-				}
+				summary.Tags = tagsToMap(tagsResp.TagDescriptions[0].Tags)
 			}
 
 			targetGroups = append(targetGroups, summary)
