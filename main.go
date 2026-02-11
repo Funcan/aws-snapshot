@@ -190,6 +190,12 @@ var versionElastiCacheCmd = &cobra.Command{
 	RunE:  runVersionElastiCache,
 }
 
+var versionOpenSearchCmd = &cobra.Command{
+	Use:   "opensearch",
+	Short: "Show OpenSearch domain versions",
+	RunE:  runVersionOpenSearch,
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&profile, "profile", "", "AWS profile to use")
 	rootCmd.PersistentFlags().StringVar(&region, "region", "", "AWS region to use")
@@ -223,6 +229,7 @@ func init() {
 	versionCmd.AddCommand(versionRDSCmd)
 	versionCmd.AddCommand(versionMSKCmd)
 	versionCmd.AddCommand(versionElastiCacheCmd)
+	versionCmd.AddCommand(versionOpenSearchCmd)
 }
 
 func buildClient(ctx context.Context) (*awsclient.Client, error) {
@@ -1680,6 +1687,43 @@ func runVersionElastiCache(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		fmt.Fprintf(w, "cache-cluster\t%s\t%s\t%s\t%s\t%s\n", cc.CacheClusterId, cc.Engine, cc.EngineVersion, cc.CacheNodeType, cc.Status)
+	}
+
+	w.Flush()
+	return nil
+}
+
+func runVersionOpenSearch(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	client, err := buildClient(ctx)
+	if err != nil {
+		return fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	var osOpts []awsclient.OpenSearchOption
+	if verbose {
+		osOpts = append(osOpts, awsclient.WithOpenSearchStatusFunc(statusf))
+	}
+	osClient := client.OpenSearchClient(osOpts...)
+
+	statusf("Fetching OpenSearch domains...")
+	domains, err := osClient.Summarise(ctx)
+	if err != nil {
+		return fmt.Errorf("listing OpenSearch domains: %w", err)
+	}
+
+	// Sort domains by name
+	sort.Slice(domains, func(i, j int) bool {
+		return domains[i].DomainName < domains[j].DomainName
+	})
+
+	// Print table output
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "DOMAIN\tVERSION\tINSTANCE TYPE\tINSTANCES")
+
+	for _, domain := range domains {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", domain.DomainName, domain.EngineVersion, domain.ClusterInstanceType, domain.ClusterInstanceCount)
 	}
 
 	w.Flush()
