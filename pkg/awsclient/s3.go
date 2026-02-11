@@ -389,6 +389,3 @@ func extractRegionFromDirectoryBucket(name string) string {
 	// Return empty and let caller determine region if needed
 	return ""
 }
-
-// BucketRegion is a helper type for bucket region responses.
-type BucketRegion = types.BucketLocationConstraint
