@@ -9,3 +9,6 @@ coverage
 coverage.out
 coverage.html
 coverage.txt
+
+# Ignore all the json files produced while testing
+*.json
