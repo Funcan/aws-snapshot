@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"text/tabwriter"
+	"time"
 
 	"aws-snapshot/pkg/awsclient"
 
@@ -255,6 +256,7 @@ func statusf(format string, args ...any) {
 
 // Snapshot represents the top-level output structure.
 type Snapshot struct {
+	Timestamp   string                          `json:"timestamp"`
 	S3          []awsclient.BucketSummary       `json:"S3,omitempty"`
 	EKS         []awsclient.ClusterSummary      `json:"EKS,omitempty"`
 	RDS         *awsclient.RDSSummary           `json:"RDS,omitempty"`
@@ -277,6 +279,8 @@ type Snapshot struct {
 }
 
 func outputSnapshot(snap Snapshot) error {
+	snap.Timestamp = time.Now().UTC().Format(time.RFC3339)
+
 	// Encode to JSON
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
