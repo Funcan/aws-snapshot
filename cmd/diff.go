@@ -1,14 +1,19 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"aws-snapshot/pkg/diff"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/spf13/cobra"
 )
 
@@ -61,7 +66,14 @@ func runDiff(cmd *cobra.Command, args []string) error {
 }
 
 func loadSnapshotFile(filename string) (map[string]interface{}, time.Time, error) {
-	data, err := os.ReadFile(filename)
+	var data []byte
+	var err error
+
+	if strings.HasPrefix(filename, "s3://") {
+		data, err = readFromS3(filename)
+	} else {
+		data, err = os.ReadFile(filename)
+	}
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -80,6 +92,9 @@ func loadSnapshotFile(filename string) (map[string]interface{}, time.Time, error
 	}
 
 	if ts.IsZero() {
+		if strings.HasPrefix(filename, "s3://") {
+			return nil, time.Time{}, fmt.Errorf("s3 object %s has no timestamp field", filename)
+		}
 		fi, err := os.Stat(filename)
 		if err != nil {
 			return nil, time.Time{}, err
@@ -88,6 +103,37 @@ func loadSnapshotFile(filename string) (map[string]interface{}, time.Time, error
 	}
 
 	return obj, ts, nil
+}
+
+func readFromS3(url string) ([]byte, error) {
+	ctx := context.Background()
+
+	path := strings.TrimPrefix(url, "s3://")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, fmt.Errorf("invalid S3 URL: %s (expected s3://bucket/key)", url)
+	}
+	bucket := parts[0]
+	key := parts[1]
+
+	Statusf("Downloading %s...", url)
+
+	client, err := BuildClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("creating AWS client: %w", err)
+	}
+
+	s3Client := s3.NewFromConfig(client.Config())
+	result, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reading from S3: %w", err)
+	}
+	defer result.Body.Close()
+
+	return io.ReadAll(result.Body)
 }
 
 func formatTimeWindow(t1, t2 time.Time) string {
