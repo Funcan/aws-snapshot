@@ -103,7 +103,29 @@ func extractNames(state *terraform.State, checker resourceChecker) []string {
 	return names
 }
 
+// allCheckerTypes returns sorted checker keys.
+func allCheckerTypes() []string {
+	types := make([]string, 0, len(checkers))
+	for k := range checkers {
+		types = append(types, k)
+	}
+	sort.Strings(types)
+	return types
+}
+
+// expandResourceTypes replaces "all" with every checker key.
+func expandResourceTypes(args []string) []string {
+	for _, a := range args {
+		if a == "all" {
+			return allCheckerTypes()
+		}
+	}
+	return args
+}
+
 func runTerraformCheck(cmd *cobra.Command, args []string) error {
+	args = expandResourceTypes(args)
+
 	// Validate resource types
 	for _, rt := range args {
 		if _, ok := checkers[rt]; !ok {

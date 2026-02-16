@@ -28,6 +28,8 @@ func init() {
 }
 
 func runTerraformDump(cmd *cobra.Command, args []string) error {
+	args = expandResourceTypes(args)
+
 	// Validate resource types
 	for _, rt := range args {
 		if _, ok := checkers[rt]; !ok {
