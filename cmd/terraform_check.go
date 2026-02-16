@@ -203,6 +203,238 @@ var checkers = map[string]resourceChecker{
 			return names, nil
 		},
 	},
+	"elasticache": {
+		terraformTypes: []string{"aws_elasticache_cluster", "aws_elasticache_replication_group"},
+		attrKey:        "replication_group_id",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.ElastiCacheOption
+			if Verbose {
+				opts = append(opts, awsclient.WithElastiCacheStatusFunc(Statusf))
+			}
+			ecClient := client.ElastiCacheClient(opts...)
+
+			summary, err := ecClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(summary.ReplicationGroups))
+			for i, rg := range summary.ReplicationGroups {
+				names[i] = rg.ReplicationGroupId
+			}
+			return names, nil
+		},
+	},
+	"elb": {
+		terraformTypes: []string{"aws_lb", "aws_alb"},
+		attrKey:        "name",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.ELBOption
+			if Verbose {
+				opts = append(opts, awsclient.WithELBStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithELBConcurrency(Concurrency))
+			elbClient := client.ELBClient(opts...)
+
+			summary, err := elbClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(summary.LoadBalancers))
+			for i, lb := range summary.LoadBalancers {
+				names[i] = lb.LoadBalancerName
+			}
+			return names, nil
+		},
+	},
+	"eventbridge": {
+		terraformTypes: []string{"aws_cloudwatch_event_bus"},
+		attrKey:        "name",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.EventBridgeOption
+			if Verbose {
+				opts = append(opts, awsclient.WithEventBridgeStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithEventBridgeConcurrency(Concurrency))
+			ebClient := client.EventBridgeClient(opts...)
+
+			summary, err := ebClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(summary.EventBuses))
+			for i, eb := range summary.EventBuses {
+				names[i] = eb.Name
+			}
+			return names, nil
+		},
+	},
+	"iam": {
+		terraformTypes: []string{"aws_iam_role"},
+		attrKey:        "name",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.IAMOption
+			if Verbose {
+				opts = append(opts, awsclient.WithIAMStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithIAMConcurrency(Concurrency))
+			iamClient := client.IAMClient(opts...)
+
+			summary, err := iamClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(summary.Roles))
+			for i, r := range summary.Roles {
+				names[i] = r.Name
+			}
+			return names, nil
+		},
+	},
+	"lambda": {
+		terraformTypes: []string{"aws_lambda_function"},
+		attrKey:        "function_name",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.LambdaOption
+			if Verbose {
+				opts = append(opts, awsclient.WithLambdaStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithLambdaConcurrency(Concurrency))
+			lambdaClient := client.LambdaClient(opts...)
+
+			functions, err := lambdaClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(functions))
+			for i, f := range functions {
+				names[i] = f.FunctionName
+			}
+			return names, nil
+		},
+	},
+	"msk": {
+		terraformTypes: []string{"aws_msk_cluster"},
+		attrKey:        "cluster_name",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.MSKOption
+			if Verbose {
+				opts = append(opts, awsclient.WithMSKStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithMSKConcurrency(Concurrency))
+			mskClient := client.MSKClient(opts...)
+
+			clusters, err := mskClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(clusters))
+			for i, c := range clusters {
+				names[i] = c.ClusterName
+			}
+			return names, nil
+		},
+	},
+	"rds": {
+		terraformTypes: []string{"aws_db_instance", "aws_rds_cluster"},
+		attrKey:        "identifier",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.RDSOption
+			if Verbose {
+				opts = append(opts, awsclient.WithRDSStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithRDSConcurrency(Concurrency))
+			rdsClient := client.RDSClient(opts...)
+
+			summary, err := rdsClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			var names []string
+			for _, inst := range summary.Instances {
+				names = append(names, inst.Identifier)
+			}
+			for _, cl := range summary.Clusters {
+				names = append(names, cl.Identifier)
+			}
+			return names, nil
+		},
+	},
+	"route53": {
+		terraformTypes: []string{"aws_route53_zone"},
+		attrKey:        "name",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.Route53Option
+			if Verbose {
+				opts = append(opts, awsclient.WithRoute53StatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithRoute53Concurrency(Concurrency))
+			r53Client := client.Route53Client(opts...)
+
+			zones, err := r53Client.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(zones))
+			for i, z := range zones {
+				names[i] = z.Name
+			}
+			return names, nil
+		},
+	},
+	"sns": {
+		terraformTypes: []string{"aws_sns_topic"},
+		attrKey:        "name",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.SNSOption
+			if Verbose {
+				opts = append(opts, awsclient.WithSNSStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithSNSConcurrency(Concurrency))
+			snsClient := client.SNSClient(opts...)
+
+			topics, err := snsClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(topics))
+			for i, t := range topics {
+				names[i] = t.Name
+			}
+			return names, nil
+		},
+	},
+	"vpc": {
+		terraformTypes: []string{"aws_vpc"},
+		attrKey:        "id",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.VPCOption
+			if Verbose {
+				opts = append(opts, awsclient.WithVPCStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithVPCConcurrency(Concurrency))
+			vpcClient := client.VPCClient(opts...)
+
+			vpcs, err := vpcClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(vpcs))
+			for i, v := range vpcs {
+				names[i] = v.VpcId
+			}
+			return names, nil
+		},
+	},
 	"ecs": {
 		terraformTypes: []string{"aws_ecs_cluster"},
 		attrKey:        "name",
