@@ -157,6 +157,29 @@ var checkers = map[string]resourceChecker{
 			return names, nil
 		},
 	},
+	"eks": {
+		terraformTypes: []string{"aws_eks_cluster"},
+		attrKey:        "name",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.EKSOption
+			if Verbose {
+				opts = append(opts, awsclient.WithEKSStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithEKSConcurrency(Concurrency))
+			eksClient := client.EKSClient(opts...)
+
+			clusters, err := eksClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(clusters))
+			for i, c := range clusters {
+				names[i] = c.Name
+			}
+			return names, nil
+		},
+	},
 }
 
 // extractNames returns resource names from a parsed state for the given checker.
