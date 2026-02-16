@@ -180,6 +180,29 @@ var checkers = map[string]resourceChecker{
 			return names, nil
 		},
 	},
+	"ecr": {
+		terraformTypes: []string{"aws_ecr_repository"},
+		attrKey:        "name",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.ECROption
+			if Verbose {
+				opts = append(opts, awsclient.WithECRStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithECRConcurrency(Concurrency))
+			ecrClient := client.ECRClient(opts...)
+
+			repos, err := ecrClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(repos))
+			for i, r := range repos {
+				names[i] = r.RepositoryName
+			}
+			return names, nil
+		},
+	},
 }
 
 // extractNames returns resource names from a parsed state for the given checker.
