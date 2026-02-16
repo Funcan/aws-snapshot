@@ -1,121 +1,120 @@
 # aws-snapshot
 
-A tool that captures diffable snapshots of AWS resources and their key attributes across an account.
+Capture diffable JSON snapshots of AWS resources. Compare snapshots to detect drift, track changes over time, and cross-check against Terraform state.
 
-## Purpose
+## Commands
 
-Track changes to your AWS infrastructure over time by generating consistent, diff-friendly snapshots of all resources. Compare snapshots to identify:
-- Unintended configuration drift
-- Changes made outside of IaC
-- Resource additions and deletions
+### snapshot
 
-## Usage
+Take a snapshot of AWS resources. Each resource type is a subcommand.
 
 ```bash
-aws-snapshot --profile my-account --output snapshot.json
+aws-snapshot snapshot s3
+aws-snapshot snapshot eks rds lambda
+aws-snapshot snapshot all -o snapshot.json
+aws-snapshot snapshot all -o s3://my-bucket/snapshot.json
 ```
 
-Compare two snapshots:
+Supported resource types: `apigateway`, `cloudfront`, `dynamodb`, `ecr`, `ecs`, `eks`, `elasticache`, `elb`, `eventbridge`, `iam`, `lambda`, `msk`, `opensearch`, `rds`, `route53`, `s3`, `sns`, `sqs`, `vpc`, `all`.
+
+### diff
+
+Compare two or more snapshots. Files are sorted by their `timestamp` field and compared pairwise.
+
 ```bash
-diff snapshot-before.json snapshot-after.json
+aws-snapshot diff before.json after.json
+aws-snapshot diff s3://bucket/snap1.json s3://bucket/snap2.json
 ```
 
-## Configuration
+Output:
 
-Create a `config.yaml` to customize which attributes are captured for each resource type:
-
-```yaml
-# config.yaml
-resources:
-  ec2:
-    instance:
-      - InstanceId
-      - InstanceType
-      - State
-      - Tags
-      - VpcId
-      - SubnetId
-    security_group:
-      - GroupId
-      - GroupName
-      - Description
-      - VpcId
-      - IpPermissions
-      - IpPermissionsEgress
-
-  s3:
-    bucket:
-      - Name
-      - CreationDate
-      - Tags
-
-  lambda:
-    function:
-      - FunctionName
-      - Runtime
-      - Handler
-      - MemorySize
-      - Timeout
-      - Environment
-      - Tags
-
-  rds:
-    instance:
-      - DBInstanceIdentifier
-      - DBInstanceClass
-      - Engine
-      - EngineVersion
-      - MultiAZ
-      - StorageType
-      - AllocatedStorage
+```
+EKS->production->kubernetes_version: "1.32" -> "1.33"
+S3->data-exports: (added)
+Lambda->old-function: (removed)
 ```
 
-## Output Format
+### version
 
-Snapshots are JSON files with resources sorted alphabetically for consistent diffs:
+Show version information for AWS resources as a table.
+
+```bash
+aws-snapshot version eks
+aws-snapshot version rds
+```
+
+Supported types: `eks`, `rds`, `msk`, `elasticache`, `opensearch`.
+
+### terraform-check
+
+Compare Terraform state with actual AWS resources to find drift.
+
+```bash
+aws-snapshot terraform-check --statefile terraform.tfstate s3 rds
+aws-snapshot terraform-check --statefile s3://bucket/state.json --statefile other.tfstate all
+```
+
+Shows resources that exist in AWS but not in Terraform state, and vice versa.
+
+### terraform-dump
+
+List resources found in Terraform state files.
+
+```bash
+aws-snapshot terraform-dump --statefile terraform.tfstate s3 lambda
+```
+
+Output: `resource-type: resource-name: state-file-path`
+
+## Global flags
+
+```
+--profile string    AWS profile to use
+--region string     AWS region to use
+-v, --verbose       Print progress messages to stderr
+-c, --concurrency   Max parallel resource fetches (default 10)
+-o, --outfile       Output file path or s3://bucket/key (default: stdout)
+```
+
+## Output format
+
+Snapshots are JSON with arrays sorted for consistent diffs:
 
 ```json
 {
-  "account_id": "123456789012",
-  "region": "us-east-1",
-  "timestamp": "2026-02-09T12:00:00Z",
-  "resources": {
-    "ec2:instance": [
-      {
-        "InstanceId": "i-0123456789abcdef0",
-        "InstanceType": "t3.micro",
-        "State": "running"
-      }
-    ],
-    "s3:bucket": [
-      {
-        "Name": "my-bucket",
-        "CreationDate": "2025-01-15T08:30:00Z"
-      }
-    ]
+  "timestamp": "2025-02-20T12:00:00Z",
+  "S3": [
+    {
+      "name": "my-bucket",
+      "region": "us-east-1",
+      "versioning_state": "enabled"
+    }
+  ],
+  "EKS": [
+    {
+      "name": "production",
+      "version": "1.32"
+    }
+  ],
+  "RDS": {
+    "instances": [],
+    "clusters": []
   }
 }
 ```
 
-## Requirements
-
-- Go 1.21+
-- AWS credentials configured (via environment, profile, or IAM role)
-- Read permissions for resources you want to snapshot
-
 ## Installation
-
-```bash
-go install github.com/funcan/aws-snapshot@latest
-```
-
-Or build from source:
 
 ```bash
 git clone https://github.com/funcan/aws-snapshot.git
 cd aws-snapshot
-go build -o aws-snapshot .
+make build
 ```
+
+## Requirements
+
+- Go 1.23+
+- AWS credentials configured (environment, profile, or IAM role)
 
 ## License
 
