@@ -85,6 +85,32 @@ var checkers = map[string]resourceChecker{
 			return names, nil
 		},
 	},
+	"apigateway": {
+		terraformTypes: []string{"aws_api_gateway_rest_api", "aws_apigatewayv2_api"},
+		attrKey:        "name",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.APIGatewayOption
+			if Verbose {
+				opts = append(opts, awsclient.WithAPIGatewayStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithAPIGatewayConcurrency(Concurrency))
+			apigwClient := client.APIGatewayClient(opts...)
+
+			summary, err := apigwClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			var names []string
+			for _, a := range summary.RestAPIs {
+				names = append(names, a.Name)
+			}
+			for _, a := range summary.HttpAPIs {
+				names = append(names, a.Name)
+			}
+			return names, nil
+		},
+	},
 }
 
 // extractNames returns resource names from a parsed state for the given checker.
