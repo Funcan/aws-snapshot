@@ -111,6 +111,29 @@ var checkers = map[string]resourceChecker{
 			return names, nil
 		},
 	},
+	"cloudfront": {
+		terraformTypes: []string{"aws_cloudfront_distribution"},
+		attrKey:        "id",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.CloudFrontOption
+			if Verbose {
+				opts = append(opts, awsclient.WithCloudFrontStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithCloudFrontConcurrency(Concurrency))
+			cfClient := client.CloudFrontClient(opts...)
+
+			distributions, err := cfClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(distributions))
+			for i, d := range distributions {
+				names[i] = d.Id
+			}
+			return names, nil
+		},
+	},
 }
 
 // extractNames returns resource names from a parsed state for the given checker.
