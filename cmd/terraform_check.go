@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"aws-snapshot/pkg/awsclient"
@@ -384,7 +385,7 @@ var checkers = map[string]resourceChecker{
 
 			names := make([]string, len(zones))
 			for i, z := range zones {
-				names[i] = z.Name
+				names[i] = strings.TrimSuffix(z.Name, ".")
 			}
 			return names, nil
 		},
