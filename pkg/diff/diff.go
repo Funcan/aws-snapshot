@@ -205,6 +205,41 @@ func appendPath(path []string, elem string) []string {
 	return result
 }
 
+// SetDiff holds items present in only one of two sets.
+type SetDiff struct {
+	OnlyInA []string
+	OnlyInB []string
+}
+
+// CompareSets returns items that exist in only one of the two string slices.
+// OnlyInA contains items in a but not b; OnlyInB contains items in b but not a.
+// Both result slices are sorted.
+func CompareSets(a, b []string) SetDiff {
+	setB := make(map[string]bool, len(b))
+	for _, s := range b {
+		setB[s] = true
+	}
+	setA := make(map[string]bool, len(a))
+	for _, s := range a {
+		setA[s] = true
+	}
+
+	var result SetDiff
+	for _, s := range a {
+		if !setB[s] {
+			result.OnlyInA = append(result.OnlyInA, s)
+		}
+	}
+	for _, s := range b {
+		if !setA[s] {
+			result.OnlyInB = append(result.OnlyInB, s)
+		}
+	}
+	sort.Strings(result.OnlyInA)
+	sort.Strings(result.OnlyInB)
+	return result
+}
+
 // FormatValue formats a value for human-readable diff output.
 func FormatValue(v interface{}) string {
 	switch val := v.(type) {

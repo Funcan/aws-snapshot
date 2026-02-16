@@ -47,18 +47,13 @@ func init() {
 	RootCmd.AddCommand(snapshotCmd)
 	RootCmd.AddCommand(diffCmd)
 	RootCmd.AddCommand(versionCmd)
+	RootCmd.AddCommand(terraformCheckCmd)
+	RootCmd.AddCommand(terraformDumpCmd)
 }
 
 // BuildClient creates an AWS client using the global flags.
 func BuildClient(ctx context.Context) (*awsclient.Client, error) {
-	var opts []awsclient.Option
-	if Profile != "" {
-		opts = append(opts, awsclient.WithProfile(Profile))
-	}
-	if Region != "" {
-		opts = append(opts, awsclient.WithRegion(Region))
-	}
-	return awsclient.New(ctx, opts...)
+	return awsclient.New(ctx, awsOptions()...)
 }
 
 // Statusf prints a status message to stderr when verbose mode is enabled.
@@ -66,6 +61,18 @@ func Statusf(format string, args ...any) {
 	if Verbose {
 		fmt.Fprintf(os.Stderr, format+"\n", args...)
 	}
+}
+
+// awsOptions returns awsclient.Option values from global flags.
+func awsOptions() []awsclient.Option {
+	var opts []awsclient.Option
+	if Profile != "" {
+		opts = append(opts, awsclient.WithProfile(Profile))
+	}
+	if Region != "" {
+		opts = append(opts, awsclient.WithRegion(Region))
+	}
+	return opts
 }
 
 // Snapshot represents the top-level output structure.
