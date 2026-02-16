@@ -134,6 +134,29 @@ var checkers = map[string]resourceChecker{
 			return names, nil
 		},
 	},
+	"dynamodb": {
+		terraformTypes: []string{"aws_dynamodb_table"},
+		attrKey:        "name",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.DynamoDBOption
+			if Verbose {
+				opts = append(opts, awsclient.WithDynamoDBStatusFunc(Statusf))
+			}
+			opts = append(opts, awsclient.WithDynamoDBConcurrency(Concurrency))
+			ddbClient := client.DynamoDBClient(opts...)
+
+			tables, err := ddbClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(tables))
+			for i, t := range tables {
+				names[i] = t.TableName
+			}
+			return names, nil
+		},
+	},
 }
 
 // extractNames returns resource names from a parsed state for the given checker.
