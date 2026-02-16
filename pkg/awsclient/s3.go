@@ -240,10 +240,7 @@ func (s *S3Client) processBucket(ctx context.Context, bucketName string, creatio
 			return BucketSummary{}, nil
 		}
 
-		// Retry transient errors
-		if !isTransientError(lastErr) {
-			return summary, lastErr
-		}
+		// Otherwise retry (SDK handles transient classification at the API-call level)
 	}
 
 	return summary, lastErr
@@ -326,20 +323,6 @@ func isBucketPermanentlyInaccessible(err error) bool {
 		strings.Contains(errStr, "AllAccessDisabled")
 }
 
-// isTransientError returns true if the error is likely transient and worth retrying.
-func isTransientError(err error) bool {
-	errStr := err.Error()
-	return strings.Contains(errStr, "no such host") ||
-		strings.Contains(errStr, "connection reset") ||
-		strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "i/o timeout") ||
-		strings.Contains(errStr, "TLS handshake timeout") ||
-		strings.Contains(errStr, "temporary failure") ||
-		strings.Contains(errStr, "network is unreachable") ||
-		strings.Contains(errStr, "Throttling") ||
-		strings.Contains(errStr, "SlowDown") ||
-		strings.Contains(errStr, "ServiceUnavailable")
-}
 
 func (s *S3Client) listDirectoryBuckets(ctx context.Context) ([]BucketSummary, error) {
 	s.status("Listing directory buckets...")

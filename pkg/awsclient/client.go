@@ -4,6 +4,7 @@ package awsclient
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -76,11 +77,12 @@ func New(ctx context.Context, opts ...Option) (*Client, error) {
 		configOpts = append(configOpts, config.WithRegion(o.region))
 	}
 
-	// Configure retry with exponential backoff for throttling errors
+	// Configure retry with exponential backoff for throttling and transient network errors
 	configOpts = append(configOpts, config.WithRetryer(func() aws.Retryer {
 		return retry.NewStandard(func(o *retry.StandardOptions) {
 			o.MaxAttempts = 10
 			o.MaxBackoff = 30 * time.Second
+			o.Retryables = append(o.Retryables, retry.IsErrorRetryableFunc(isTransientNetworkError))
 		})
 	}))
 
@@ -118,4 +120,27 @@ func (c *Client) AccountID(ctx context.Context) (string, error) {
 	// This will be implemented when we add the STS dependency
 	// For now, return empty - consumers should use sts.NewFromConfig(c.Config())
 	return "", fmt.Errorf("not implemented: use sts.NewFromConfig(c.Config()).GetCallerIdentity()")
+}
+
+// isTransientNetworkError classifies DNS and network errors as retryable
+// so the SDK's built-in retryer handles them with exponential backoff.
+func isTransientNetworkError(err error) aws.Ternary {
+	if err == nil {
+		return aws.UnknownTernary
+	}
+	errStr := err.Error()
+	for _, s := range []string{
+		"no such host",
+		"connection reset",
+		"connection refused",
+		"i/o timeout",
+		"TLS handshake timeout",
+		"temporary failure",
+		"network is unreachable",
+	} {
+		if strings.Contains(errStr, s) {
+			return aws.TrueTernary
+		}
+	}
+	return aws.UnknownTernary
 }
