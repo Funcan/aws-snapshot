@@ -63,6 +63,28 @@ var checkers = map[string]resourceChecker{
 			return names, nil
 		},
 	},
+	"opensearch": {
+		terraformTypes: []string{"aws_opensearch_domain"},
+		attrKey:        "domain_name",
+		fetchAWS: func(ctx context.Context, client *awsclient.Client) ([]string, error) {
+			var opts []awsclient.OpenSearchOption
+			if Verbose {
+				opts = append(opts, awsclient.WithOpenSearchStatusFunc(Statusf))
+			}
+			osClient := client.OpenSearchClient(opts...)
+
+			domains, err := osClient.Summarise(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			names := make([]string, len(domains))
+			for i, d := range domains {
+				names[i] = d.DomainName
+			}
+			return names, nil
+		},
+	},
 }
 
 // extractNames returns resource names from a parsed state for the given checker.
